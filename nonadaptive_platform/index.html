@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PythonMastery — Traditional AI Learning</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=DM+Sans:wght@400;600;800&display=swap" rel="stylesheet"/>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0a0e17;font-family:'DM Sans',sans-serif}
+    #root{min-height:100vh}
+    button{font-family:inherit}
+    @media(max-width:900px){.sidebar-left{display:none!important}}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ─── API Keys ─────────────────────────────────────────────────────────────────
+// GROQ_API_KEY moved to Cloudflare Worker
+const GROQ_MODEL   = "llama-3.3-70b-versatile";
+
+// ─── Supabase ─────────────────────────────────────────────────────────────────
+const SUPABASE_URL  = "https://bkukyoshwmflcvfojvva.supabase.co";
+const SUPABASE_KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJrdWt5b3Nod21mbGN2Zm9qdnZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1NjkzNDAsImV4cCI6MjA5MzE0NTM0MH0.W5taCVaySEcPSUSffzDmG3gDVxl0OgC56gchLKS2rjQ";
+
+async function sbInsert(table, row) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Prefer": "return=representation",
+      },
+      body: JSON.stringify(row),
+    });
+    if (!res.ok) { const err = await res.text(); console.warn(`Supabase insert error [${table}]:`, err); return null; }
+    return await res.json();
+  } catch(e) { console.warn("Supabase unreachable:", e.message); return null; }
+}
+
+async function sbUpsert(table, row, onConflict="email") {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${onConflict}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Prefer": "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify(row),
+    });
+    if (!res.ok) { const err = await res.text(); console.warn(`Supabase upsert error [${table}]:`, err); return null; }
+    return await res.json();
+  } catch(e) { console.warn("Supabase unreachable:", e.message); return null; }
+}
+
+// ─── Colors & Fonts ────────────────────────────────────────────────────────────
+const C = {
+  bg:"#0a0e17", bgCard:"#111827", bgSidebar:"#0d1220", bgHover:"#1a2237",
+  accent:"#f59e0b", accentL:"#fbbf24", accentD:"#d97706",
+  success:"#10b981", successD:"#065f46",
+  error:"#ef4444", errorD:"#7f1d1d",
+  warning:"#f59e0b", warningD:"#92400e",
+  text:"#e2e8f0", textD:"#94a3b8", textM:"#64748b",
+  border:"#1e293b", borderL:"#334155",
+  code:"#0f172a", gold:"#fbbf24", streak:"#f97316",
+};
+const font = "'JetBrains Mono','Fira Code',monospace";
+const sans = "'DM Sans','Segoe UI',sans-serif";
+
+// ─── Skills ────────────────────────────────────────────────────────────────────
+const SKILLS = [
+  { id:"variables",  label:"Variables & Data Types",     icon:"📦" },
+  { id:"conditions", label:"Conditions & Logic",          icon:"🔀" },
+  { id:"loops",      label:"Loops & Iteration",           icon:"🔁" },
+  { id:"functions",  label:"Functions",                   icon:"⚙️" },
+  { id:"lists",      label:"Lists & Data Structures",     icon:"📋" },
+  { id:"oop",        label:"Object-Oriented Programming", icon:"🏗️" },
+];
+
+// ─── TRADITIONAL TRAINING QUESTIONS (Fixed, same for everyone) ────────────────
+// Each skill: exactly 2 easy + 2 medium + 1 hard = 5 questions, fixed order
+function normalize(text) {
+  return (text||"").toLowerCase().replace(/\s+/g, " ").trim();
+}
+function normalizeCodeStructure(code) {
+  return (code||"")
+    .toLowerCase()
+    .replace(/(["']).*?\1/g, "STR")
+    .replace(/\b\d+(\.\d+)?\b/g, "NUM")
+    .replace(/\b[a-z_]\w*\b/g, (word) => {
+      const keep = new Set(["print","if","elif","else","for","while","in","range","def","return","class","self","true","false","none","and","or","not","len","type","int","float","str","list","dict","set","tuple","append","pop","sort","reverse","split","upper","lower","replace","get","keys","values","super","pass"]);
+      return keep.has(word) ? word : "VAR";
+    })
+    .replace(/\s+/g, "");
+}
+function isSimilar(q1, q2) {
+  const t1 = normalize(q1.questionText);
+  const t2 = normalize(q2.questionText);
+  const c1 = normalizeCodeStructure(q1.code);
+  const c2 = normalizeCodeStructure(q2.code);
+  const sameSkill = !q1.skill || !q2.skill || q1.skill === q2.skill;
+  return (
+    t1 === t2 ||
+    (sameSkill && c1 && c2 && c1 === c2) ||
+    (q1.code && q2.code && q1.code.trim() === q2.code.trim())
+  );
+}
+
+const TRADITIONAL_TRAINING = {
+  variables: [
+    {questionText:"What will be the output?\n\nx = 5\ny = 3\nprint(x + y)", code:"x = 5\ny = 3\nprint(x + y)", options:["53","8","2","Error"], correctIndex:1, explanation:"5 + 3 = 8.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What is the type of this value?\n\nval = 3.14\nprint(type(val))", code:"val = 3.14\nprint(type(val))", options:["<class 'int'>","<class 'float'>","<class 'str'>","<class 'num'>"], correctIndex:1, explanation:"3.14 is a float — decimal numbers are always float.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What is the output?\n\nx = 10\nx += 5\nx *= 2\nprint(x)", code:"x = 10\nx += 5\nx *= 2\nprint(x)", options:["25","30","20","35"], correctIndex:1, explanation:"x=10, then 10+5=15, then 15×2=30.", errorType:"logical", difficulty:"medium"},
+    {questionText:"What does this print?\n\na = '5'\nb = 5\nprint(a * b)", code:"a = '5'\nb = 5\nprint(a * b)", options:["25","'55555'","55555","Error"], correctIndex:2, explanation:"String × int repeats the string: '5' × 5 = '55555'.", errorType:"conceptual", difficulty:"medium"},
+    {questionText:"What is the output?\n\nx = y = z = 5\ny = 10\nprint(x, y, z)", code:"x = y = z = 5\ny = 10\nprint(x, y, z)", options:["5 10 5","10 10 10","5 5 5","5 10 10"], correctIndex:0, explanation:"Chained assignment gives all vars value 5. Changing y only affects y — integers are immutable.", errorType:"conceptual", difficulty:"hard"},
+  ],
+  conditions: [
+    {questionText:"What does this print?\n\nif True:\n    print('yes')\nelse:\n    print('no')", code:"if True:\n    print('yes')\nelse:\n    print('no')", options:["yes","no","True","Error"], correctIndex:0, explanation:"The condition is True, so 'yes' prints.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What is the output?\n\nx = 3\nif x > 5:\n    print('big')\nelse:\n    print('small')", code:"x = 3\nif x > 5:\n    print('big')\nelse:\n    print('small')", options:["big","small","3","Error"], correctIndex:1, explanation:"3 > 5 is False, so the else block runs.", errorType:"logical", difficulty:"easy"},
+    {questionText:"What is the output?\n\nx = 4\nif x % 2 == 0 and x > 2:\n    print('yes')\nelse:\n    print('no')", code:"x = 4\nif x % 2 == 0 and x > 2:\n    print('yes')\nelse:\n    print('no')", options:["yes","no","4","Error"], correctIndex:0, explanation:"4%2==0 is True and 4>2 is True — both must be True for 'and'.", errorType:"logical", difficulty:"medium"},
+    {questionText:"What does this print?\n\nval = 7\nif val < 5:\n    print('low')\nelif val < 10:\n    print('mid')\nelse:\n    print('high')", code:"val = 7\nif val < 5:\n    print('low')\nelif val < 10:\n    print('mid')\nelse:\n    print('high')", options:["low","mid","high","Error"], correctIndex:1, explanation:"7<5 is False, 7<10 is True — Python checks conditions in order.", errorType:"logical", difficulty:"medium"},
+    {questionText:"What does this print?\n\nx = 5\nprint('A' if x > 3 else 'B' if x > 1 else 'C')", code:"x = 5\nprint('A' if x > 3 else 'B' if x > 1 else 'C')", options:["A","B","C","Error"], correctIndex:0, explanation:"x>3 is True → 'A'. Chained ternary evaluates left to right.", errorType:"logical", difficulty:"hard"},
+  ],
+  loops: [
+    {questionText:"What is the output?\n\nfor i in range(3):\n    print(i)", code:"for i in range(3):\n    print(i)", options:["1 2 3","0 1 2","0 1 2 3","Error"], correctIndex:1, explanation:"range(3) gives 0, 1, 2 — it starts at 0.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What does this print?\n\ni = 0\nwhile i < 3:\n    print(i)\n    i += 1", code:"i = 0\nwhile i < 3:\n    print(i)\n    i += 1", options:["0 1 2","1 2 3","0 1 2 3","Error"], correctIndex:0, explanation:"Prints 0, 1, 2 then stops when i=3.", errorType:"logical", difficulty:"easy"},
+    {questionText:"What is the output?\n\nfor i in range(5):\n    if i == 3:\n        continue\n    print(i, end=' ')", code:"for i in range(5):\n    if i == 3:\n        continue\n    print(i, end=' ')", options:["0 1 2 3 4","0 1 2 4","0 1 2","1 2 4"], correctIndex:1, explanation:"continue skips i=3, so output is 0 1 2 4.", errorType:"conceptual", difficulty:"medium"},
+    {questionText:"What does this print?\n\ntotal = 0\nfor n in [1, 2, 3, 4]:\n    total += n\nprint(total)", code:"total = 0\nfor n in [1, 2, 3, 4]:\n    total += n\nprint(total)", options:["4","10","[1,2,3,4]","Error"], correctIndex:1, explanation:"1+2+3+4=10 — the loop accumulates each value into total.", errorType:"logical", difficulty:"medium"},
+    {questionText:"What is the output?\n\nresult = [x*2 for x in range(4) if x % 2 == 0]\nprint(result)", code:"result = [x*2 for x in range(4) if x % 2 == 0]\nprint(result)", options:["[0,2,4,6]","[0,4]","[2,6]","[0,2]"], correctIndex:1, explanation:"Even x in range(4): x=0,2. x*2: 0,4.", errorType:"syntax", difficulty:"hard"},
+  ],
+  functions: [
+    {questionText:"What does this print?\n\ndef say_hi():\n    print('Hi!')\nsay_hi()", code:"def say_hi():\n    print('Hi!')\nsay_hi()", options:["say_hi()","'Hi!'","Hi!","Error"], correctIndex:2, explanation:"Calling say_hi() executes print('Hi!').", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What does this return?\n\ndef double(n):\n    return n * 2\nprint(double(4))", code:"def double(n):\n    return n * 2\nprint(double(4))", options:["8","4","2","Error"], correctIndex:0, explanation:"4 × 2 = 8 — return sends the value back to the caller.", errorType:"logical", difficulty:"easy"},
+    {questionText:"What is the output?\n\ndef add(a,b=5):\n    return a+b\nprint(add(3))", code:"def add(a,b=5):\n    return a+b\nprint(add(3))", options:["8","3","5","Error"], correctIndex:0, explanation:"b defaults to 5. 3+5=8.", errorType:"syntax", difficulty:"medium"},
+    {questionText:"What does this print?\n\ndef f(*args): return sum(args)\nprint(f(1,2,3,4))", code:"def f(*args): return sum(args)\nprint(f(1,2,3,4))", options:["10","[1,2,3,4]","Error","4"], correctIndex:0, explanation:"*args collects all arguments into a tuple. sum([1,2,3,4])=10.", errorType:"syntax", difficulty:"medium"},
+    {questionText:"What does this print?\n\ndef outer():\n    x=10\n    def inner():\n        nonlocal x\n        x+=5\n    inner()\n    return x\nprint(outer())", code:"def outer():\n    x=10\n    def inner():\n        nonlocal x\n        x+=5\n    inner()\n    return x\nprint(outer())", options:["10","15","Error","5"], correctIndex:1, explanation:"nonlocal lets inner() modify outer's x. x becomes 15.", errorType:"conceptual", difficulty:"hard"},
+  ],
+  lists: [
+    {questionText:"What is the output?\n\nnums=[1,2,3,4]\nprint(nums[2])", code:"nums=[1,2,3,4]\nprint(nums[2])", options:["2","3","1","4"], correctIndex:1, explanation:"Indexing starts at 0. nums[2]=3.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What is the output?\n\nnums=[10,20,30]\nprint(nums[-1])", code:"nums=[10,20,30]\nprint(nums[-1])", options:["10","20","30","Error"], correctIndex:2, explanation:"-1 is the last element: 30.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What does this output?\n\nnums=[1,2,3]\nnums.append(4)\nnums.pop(1)\nprint(nums)", code:"nums=[1,2,3]\nnums.append(4)\nnums.pop(1)\nprint(nums)", options:["[1,3,4]","[1,2,4]","[2,3,4]","[1,3]"], correctIndex:0, explanation:"After append: [1,2,3,4]. pop(1) removes index 1 → [1,3,4].", errorType:"logical", difficulty:"medium"},
+    {questionText:"What does this print?\n\nwords='hello world'.split()\nprint(words)", code:"words='hello world'.split()\nprint(words)", options:["['hello','world']","hello world","Error","['h','e','l','l','o']"], correctIndex:0, explanation:"split() splits on whitespace by default.", errorType:"syntax", difficulty:"medium"},
+    {questionText:"What is the result?\n\nmatrix=[[1,2],[3,4],[5,6]]\nflat=[x for row in matrix for x in row if x%2!=0]\nprint(flat)", code:"matrix=[[1,2],[3,4],[5,6]]\nflat=[x for row in matrix for x in row if x%2!=0]\nprint(flat)", options:["[1,3,5]","[2,4,6]","[1,2,3,4,5,6]","[[1],[3],[5]]"], correctIndex:0, explanation:"Flattens and keeps only odd numbers: 1, 3, 5.", errorType:"syntax", difficulty:"hard"},
+  ],
+  oop: [
+    {questionText:"What does __init__ do in a Python class?", options:["Deletes the object","Initializes object attributes","Returns the class name","Creates a static method"], correctIndex:1, explanation:"__init__ is the constructor — it runs automatically when an object is created.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What does 'self' refer to?", options:["The class itself","The current instance","A global variable","The parent class"], correctIndex:1, explanation:"'self' refers to the specific object instance.", errorType:"conceptual", difficulty:"easy"},
+    {questionText:"What is the output?\n\nclass Dog:\n    def __init__(self,name): self.name=name\n    def speak(self): return f'{self.name} says Woof!'\nd=Dog('Rex')\nprint(d.speak())", code:"class Dog:\n    def __init__(self,name): self.name=name\n    def speak(self): return f'{self.name} says Woof!'\nd=Dog('Rex')\nprint(d.speak())", options:["Rex says Woof!","Dog says Woof!","Error","None"], correctIndex:0, explanation:"self.name='Rex'. speak() uses self.name.", errorType:"logical", difficulty:"medium"},
+    {questionText:"What is the output?\n\nclass Animal:\n    def __init__(self,sound): self.sound=sound\n    def speak(self): return self.sound\nclass Dog(Animal):\n    def __init__(self): super().__init__('Woof')\nd=Dog()\nprint(d.speak())", code:"class Animal:\n    def __init__(self,sound): self.sound=sound\n    def speak(self): return self.sound\nclass Dog(Animal):\n    def __init__(self): super().__init__('Woof')\nd=Dog()\nprint(d.speak())", options:["Woof","Error","None","Animal"], correctIndex:0, explanation:"super().__init__('Woof') sets sound='Woof'.", errorType:"syntax", difficulty:"medium"},
+    {questionText:"What does this print?\n\nclass A:\n    def greet(self): return 'Hello from A'\nclass B(A):\n    def greet(self): return 'Hello from B'\nclass C(B): pass\nprint(C().greet())", code:"class A:\n    def greet(self): return 'Hello from A'\nclass B(A):\n    def greet(self): return 'Hello from B'\nclass C(B): pass\nprint(C().greet())", options:["Hello from A","Hello from B","Error","None"], correctIndex:1, explanation:"C inherits from B. Python's MRO checks B before A.", errorType:"conceptual", difficulty:"hard"},
+  ],
+};
+
+// ─── PRE-TEST QUESTIONS ────────────────────────────────────────────────────────
+const PRE_TEST_QUESTIONS = [
+  {skill:"variables", difficulty:"easy", questionText:"What will be the output?\n\nx = 10\ny = x\nx = 20\nprint(y)", code:"x = 10\ny = x\nx = 20\nprint(y)", options:["20","10","Error","None"], correctIndex:1, explanation:"y gets value 10 when assigned. Changing x later doesn't affect y.", errorType:"conceptual"},
+  {skill:"variables", difficulty:"medium", questionText:"Which is a valid variable name?", options:["2nd_place","_count","my-var","class"], correctIndex:1, explanation:"Variable names can start with underscore or letter. 'class' is reserved.", errorType:"syntax"},
+  {skill:"variables", difficulty:"hard", questionText:"What is the output?\n\na, b = 5, 10\na, b = b, a + b\nprint(a, b)", code:"a, b = 5, 10\na, b = b, a + b\nprint(a, b)", options:["10 15","10 20","5 15","15 10"], correctIndex:0, explanation:"Python evaluates the right side first: b=10, a+b=15. Then assigns a=10, b=15.", errorType:"logical"},
+  {skill:"conditions", difficulty:"easy", questionText:"What does this print?\n\nx = 15\nif x > 10:\n    print('A')\nelse:\n    print('B')", code:"x = 15\nif x > 10:\n    print('A')\nelse:\n    print('B')", options:["A","B","AB","Error"], correctIndex:0, explanation:"15 > 10 is True, so 'A' prints.", errorType:"logical"},
+  {skill:"conditions", difficulty:"medium", questionText:"What is the output?\n\nx = 0\nif x:\n    print('Yes')\nelse:\n    print('No')", code:"x = 0\nif x:\n    print('Yes')\nelse:\n    print('No')", options:["Yes","No","Error","0"], correctIndex:1, explanation:"0 is falsy in Python.", errorType:"conceptual"},
+  {skill:"conditions", difficulty:"hard", questionText:"What does this print?\n\nx=5; y=10\nresult = 'even' if (x+y)%2==0 else 'odd'\nprint(result)", code:"x=5; y=10\nresult = 'even' if (x+y)%2==0 else 'odd'\nprint(result)", options:["even","odd","Error","None"], correctIndex:1, explanation:"5+10=15. 15%2=1 ≠ 0, so 'odd'.", errorType:"logical"},
+  {skill:"loops", difficulty:"easy", questionText:"How many times does this run?\n\nfor i in range(5):\n    print(i)", code:"for i in range(5):\n    print(i)", options:["4","5","6","Error"], correctIndex:1, explanation:"range(5) produces 0,1,2,3,4 — 5 iterations.", errorType:"conceptual"},
+  {skill:"loops", difficulty:"medium", questionText:"What is printed?\n\ntotal=0\nfor i in range(1,4):\n    total+=i\nprint(total)", code:"total=0\nfor i in range(1,4):\n    total+=i\nprint(total)", options:["10","6","3","7"], correctIndex:1, explanation:"1+2+3=6.", errorType:"logical"},
+  {skill:"loops", difficulty:"hard", questionText:"What does this output?\n\nresult=[]\nfor i in range(3):\n    for j in range(2):\n        if i==j: result.append((i,j))\nprint(result)", code:"result=[]\nfor i in range(3):\n    for j in range(2):\n        if i==j: result.append((i,j))\nprint(result)", options:["[(0,0),(1,1)]","[(0,0),(1,1),(2,2)]","[(0,0)]","[]"], correctIndex:0, explanation:"j only goes 0,1. When i=2, j never equals 2.", errorType:"logical"},
+  {skill:"functions", difficulty:"easy", questionText:"What does this return?\n\ndef greet(name):\n    return 'Hello ' + name\nprint(greet('Ali'))", code:"def greet(name):\n    return 'Hello ' + name\nprint(greet('Ali'))", options:["Hello Ali","Hello name","Error","None"], correctIndex:0, explanation:"Concatenates 'Hello ' with 'Ali'.", errorType:"logical"},
+  {skill:"functions", difficulty:"medium", questionText:"What is the output?\n\ndef add(a,b=5):\n    return a+b\nprint(add(3))", code:"def add(a,b=5):\n    return a+b\nprint(add(3))", options:["8","3","5","Error"], correctIndex:0, explanation:"b defaults to 5. 3+5=8.", errorType:"syntax"},
+  {skill:"functions", difficulty:"hard", questionText:"What does this print?\n\ndef outer():\n    x=10\n    def inner():\n        nonlocal x\n        x+=5\n    inner()\n    return x\nprint(outer())", code:"def outer():\n    x=10\n    def inner():\n        nonlocal x\n        x+=5\n    inner()\n    return x\nprint(outer())", options:["10","15","Error","5"], correctIndex:1, explanation:"nonlocal lets inner() modify x. x becomes 15.", errorType:"conceptual"},
+  {skill:"lists", difficulty:"easy", questionText:"What is the output?\n\nnums=[1,2,3,4]\nprint(nums[2])", code:"nums=[1,2,3,4]\nprint(nums[2])", options:["2","3","1","4"], correctIndex:1, explanation:"Indexing starts at 0. nums[2]=3.", errorType:"conceptual"},
+  {skill:"lists", difficulty:"medium", questionText:"What does this output?\n\nnums=[1,2,3]\nnums.append(4)\nnums.pop(1)\nprint(nums)", code:"nums=[1,2,3]\nnums.append(4)\nnums.pop(1)\nprint(nums)", options:["[1,3,4]","[1,2,4]","[2,3,4]","[1,3]"], correctIndex:0, explanation:"After append: [1,2,3,4]. pop(1) removes index 1 → [1,3,4].", errorType:"logical"},
+  {skill:"lists", difficulty:"hard", questionText:"What is the result?\n\nmatrix=[[1,2],[3,4],[5,6]]\nflat=[x for row in matrix for x in row if x%2!=0]\nprint(flat)", code:"matrix=[[1,2],[3,4],[5,6]]\nflat=[x for row in matrix for x in row if x%2!=0]\nprint(flat)", options:["[1,3,5]","[2,4,6]","[1,2,3,4,5,6]","[[1],[3],[5]]"], correctIndex:0, explanation:"Flattens and filters odd numbers only.", errorType:"syntax"},
+  {skill:"oop", difficulty:"easy", questionText:"What does __init__ do in a Python class?", options:["Deletes the object","Initializes object attributes","Returns the class name","Creates a static method"], correctIndex:1, explanation:"__init__ is the constructor.", errorType:"conceptual"},
+  {skill:"oop", difficulty:"medium", questionText:"What is the output?\n\nclass Dog:\n    def __init__(self,name): self.name=name\n    def speak(self): return f'{self.name} says Woof!'\nd=Dog('Rex')\nprint(d.speak())", code:"class Dog:\n    def __init__(self,name): self.name=name\n    def speak(self): return f'{self.name} says Woof!'\nd=Dog('Rex')\nprint(d.speak())", options:["Rex says Woof!","Dog says Woof!","Error","None"], correctIndex:0, explanation:"self.name='Rex'. speak() uses self.name.", errorType:"logical"},
+  {skill:"oop", difficulty:"hard", questionText:"What does this print?\n\nclass A:\n    def greet(self): return 'Hello from A'\nclass B(A):\n    def greet(self): return 'Hello from B'\nclass C(B): pass\nprint(C().greet())", code:"class A:\n    def greet(self): return 'Hello from A'\nclass B(A):\n    def greet(self): return 'Hello from B'\nclass C(B): pass\nprint(C().greet())", options:["Hello from A","Hello from B","Error","None"], correctIndex:1, explanation:"C inherits from B. MRO checks B first.", errorType:"conceptual"},
+];
+
+const POST_TEST_QUESTIONS = [
+  {skill:"variables", difficulty:"easy", questionText:"What is the output?\n\nname='Python'\nprint(type(name))", code:"name='Python'\nprint(type(name))", options:["<class 'str'>","str","string","text"], correctIndex:0, explanation:"type() returns <class 'str'>.", errorType:"conceptual"},
+  {skill:"variables", difficulty:"medium", questionText:"What does this print?\n\nx='5'\ny=3\nprint(int(x)+y)", code:"x='5'\ny=3\nprint(int(x)+y)", options:["53","8","Error","'53'"], correctIndex:1, explanation:"int('5')=5. 5+3=8.", errorType:"logical"},
+  {skill:"variables", difficulty:"hard", questionText:"What is the result?\n\nx=[1,2,3]\ny=x\ny.append(4)\nprint(x)", code:"x=[1,2,3]\ny=x\ny.append(4)\nprint(x)", options:["[1,2,3]","[1,2,3,4]","Error","[4]"], correctIndex:1, explanation:"y=x creates a reference, not a copy.", errorType:"conceptual"},
+  {skill:"conditions", difficulty:"easy", questionText:"What is printed?\n\nage=20\nif age>=18: print('Adult')\nelse: print('Minor')", code:"age=20\nif age>=18: print('Adult')\nelse: print('Minor')", options:["Adult","Minor","Error","20"], correctIndex:0, explanation:"20>=18 is True.", errorType:"logical"},
+  {skill:"conditions", difficulty:"medium", questionText:"What is the output?\n\nx=7\nif x>10: print('Big')\nelif x>5: print('Medium')\nelse: print('Small')", code:"x=7\nif x>10: print('Big')\nelif x>5: print('Medium')\nelse: print('Small')", options:["Big","Medium","Small","Error"], correctIndex:1, explanation:"7>10 False, 7>5 True → 'Medium'.", errorType:"logical"},
+  {skill:"conditions", difficulty:"hard", questionText:"What is the output?\n\nx=5\nprint('yes' if x>3 and x<10 else 'no')", code:"x=5\nprint('yes' if x>3 and x<10 else 'no')", options:["yes","no","Error","True"], correctIndex:0, explanation:"5>3 and 5<10 are both True.", errorType:"logical"},
+  {skill:"loops", difficulty:"easy", questionText:"What does this print?\n\nfor i in range(3):\n    print(i*2, end=' ')", code:"for i in range(3):\n    print(i*2, end=' ')", options:["0 2 4","1 2 3","0 1 2","2 4 6"], correctIndex:0, explanation:"i=0→0, i=1→2, i=2→4.", errorType:"logical"},
+  {skill:"loops", difficulty:"medium", questionText:"What is printed?\n\nfor i in range(5):\n    if i==3: break\n    print(i, end=' ')", code:"for i in range(5):\n    if i==3: break\n    print(i, end=' ')", options:["0 1 2","0 1 2 3","0 1 2 3 4","1 2 3"], correctIndex:0, explanation:"break stops at i=3 before printing.", errorType:"conceptual"},
+  {skill:"loops", difficulty:"hard", questionText:"What is the output?\n\nnums=[1,2,3,4,5]\nresult=[x**2 for x in nums if x%2==0]\nprint(result)", code:"nums=[1,2,3,4,5]\nresult=[x**2 for x in nums if x%2==0]\nprint(result)", options:["[4,16]","[1,4,9,16,25]","[2,4]","[4,8]"], correctIndex:0, explanation:"Even numbers: 2,4. Squared: 4,16.", errorType:"syntax"},
+  {skill:"functions", difficulty:"easy", questionText:"What is the output?\n\ndef square(n): return n*n\nprint(square(4))", code:"def square(n): return n*n\nprint(square(4))", options:["16","8","4","Error"], correctIndex:0, explanation:"4*4=16.", errorType:"logical"},
+  {skill:"functions", difficulty:"medium", questionText:"What does this print?\n\ndef f(*args): return sum(args)\nprint(f(1,2,3,4))", code:"def f(*args): return sum(args)\nprint(f(1,2,3,4))", options:["10","[1,2,3,4]","Error","4"], correctIndex:0, explanation:"*args collects all arguments. sum([1,2,3,4])=10.", errorType:"syntax"},
+  {skill:"functions", difficulty:"hard", questionText:"What is the output?\n\ndef make_adder(n): return lambda x: x+n\nadd5=make_adder(5)\nprint(add5(3))", code:"def make_adder(n): return lambda x: x+n\nadd5=make_adder(5)\nprint(add5(3))", options:["8","5","3","Error"], correctIndex:0, explanation:"Closure: n=5 captured. add5(3)=3+5=8.", errorType:"conceptual"},
+  {skill:"lists", difficulty:"easy", questionText:"What is the output?\n\nnums=[10,20,30]\nprint(nums[-1])", code:"nums=[10,20,30]\nprint(nums[-1])", options:["10","20","30","Error"], correctIndex:2, explanation:"-1 is the last element: 30.", errorType:"conceptual"},
+  {skill:"lists", difficulty:"medium", questionText:"What does this print?\n\nwords='hello world'.split()\nprint(words)", code:"words='hello world'.split()\nprint(words)", options:["['hello','world']","hello world","Error","['h','e','l','l','o']"], correctIndex:0, explanation:"split() splits on whitespace.", errorType:"syntax"},
+  {skill:"lists", difficulty:"hard", questionText:"What is the output?\n\na=[1,2,3]\nb=a[:]\nb.append(4)\nprint(a, b)", code:"a=[1,2,3]\nb=a[:]\nb.append(4)\nprint(a, b)", options:["[1,2,3] [1,2,3,4]","[1,2,3,4] [1,2,3,4]","[1,2,3] [1,2,3]","Error"], correctIndex:0, explanation:"a[:] creates a shallow copy.", errorType:"conceptual"},
+  {skill:"oop", difficulty:"easy", questionText:"What does 'self' refer to?", options:["The class itself","The current instance","A global variable","The parent class"], correctIndex:1, explanation:"'self' refers to the specific object instance.", errorType:"conceptual"},
+  {skill:"oop", difficulty:"medium", questionText:"What is the output?\n\nclass Animal:\n    def __init__(self,sound): self.sound=sound\n    def speak(self): return self.sound\nclass Dog(Animal):\n    def __init__(self): super().__init__('Woof')\nd=Dog()\nprint(d.speak())", code:"class Animal:\n    def __init__(self,sound): self.sound=sound\n    def speak(self): return self.sound\nclass Dog(Animal):\n    def __init__(self): super().__init__('Woof')\nd=Dog()\nprint(d.speak())", options:["Woof","Error","None","Animal"], correctIndex:0, explanation:"super().__init__('Woof') sets sound='Woof'.", errorType:"syntax"},
+  {skill:"oop", difficulty:"hard", questionText:"What does this print?\n\nclass Shape:\n    def area(self): return 0\nclass Circle(Shape):\n    def __init__(self,r): self.r=r\n    def area(self): return 3.14*self.r**2\nshapes=[Shape(),Circle(5)]\nprint([s.area() for s in shapes])", code:"class Shape:\n    def area(self): return 0\nclass Circle(Shape):\n    def __init__(self,r): self.r=r\n    def area(self): return 3.14*self.r**2\nshapes=[Shape(),Circle(5)]\nprint([s.area() for s in shapes])", options:["[0,78.5]","[0,0]","[78.5,78.5]","Error"], correctIndex:0, explanation:"Polymorphism: each object calls its own area().", errorType:"conceptual"},
+];
+
+// ─── GROQ: Simple static feedback only (no adaptive generation) ───────────────
+const SUPPLEMENTAL_QUESTION_BANK = {
+  variables: [
+    {skill:"variables", difficulty:"easy", questionText:"What is the output?\n\nscore = 12\nprint(score)", code:"score = 12\nprint(score)", options:["score","12","'12'","Error"], correctIndex:1, explanation:"print(score) outputs the value stored in score.", errorType:"conceptual"},
+    {skill:"variables", difficulty:"easy", questionText:"Which value is a string?", options:["42","3.5","'hello'","True"], correctIndex:2, explanation:"Text inside quotes is a string.", errorType:"conceptual"},
+    {skill:"variables", difficulty:"medium", questionText:"What is the output?\n\nx = '7'\ny = '2'\nprint(x + y)", code:"x = '7'\ny = '2'\nprint(x + y)", options:["9","72","'9'","Error"], correctIndex:1, explanation:"Both values are strings, so + concatenates them.", errorType:"conceptual"},
+    {skill:"variables", difficulty:"medium", questionText:"What does this print?\n\nx = 4\nx = x + 6\nprint(x)", code:"x = 4\nx = x + 6\nprint(x)", options:["4","6","10","Error"], correctIndex:2, explanation:"x starts at 4, then becomes 10.", errorType:"logical"},
+    {skill:"variables", difficulty:"hard", questionText:"What is the output?\n\na = [1, 2]\nb = a\na = [3, 4]\nprint(b)", code:"a = [1, 2]\nb = a\na = [3, 4]\nprint(b)", options:["[1, 2]","[3, 4]","[1, 2, 3, 4]","Error"], correctIndex:0, explanation:"b still references the original list [1, 2].", errorType:"conceptual"},
+    {skill:"variables", difficulty:"hard", questionText:"What does this print?\n\nx = 2\ny = x\nx += 3\ny += 4\nprint(x, y)", code:"x = 2\ny = x\nx += 3\ny += 4\nprint(x, y)", options:["5 6","5 9","9 9","2 6"], correctIndex:0, explanation:"x becomes 5 and y becomes 6.", errorType:"logical"},
+  ],
+  conditions: [
+    {skill:"conditions", difficulty:"easy", questionText:"What is printed?\n\nx = 8\nif x == 8:\n    print('yes')\nelse:\n    print('no')", code:"x = 8\nif x == 8:\n    print('yes')\nelse:\n    print('no')", options:["yes","no","8","Error"], correctIndex:0, explanation:"x == 8 is True.", errorType:"syntax"},
+    {skill:"conditions", difficulty:"easy", questionText:"Which expression is True?", options:["5 < 3","4 == 4","7 != 7","2 > 9"], correctIndex:1, explanation:"4 == 4 is True.", errorType:"conceptual"},
+    {skill:"conditions", difficulty:"medium", questionText:"What is the output?\n\nx = 6\nif x > 3 and x < 5:\n    print('A')\nelse:\n    print('B')", code:"x = 6\nif x > 3 and x < 5:\n    print('A')\nelse:\n    print('B')", options:["A","B","True","Error"], correctIndex:1, explanation:"x < 5 is False, and requires both conditions True.", errorType:"logical"},
+    {skill:"conditions", difficulty:"medium", questionText:"What does this print?\n\nname = ''\nif name:\n    print('set')\nelse:\n    print('empty')", code:"name = ''\nif name:\n    print('set')\nelse:\n    print('empty')", options:["set","empty","''","Error"], correctIndex:1, explanation:"An empty string is falsy.", errorType:"conceptual"},
+    {skill:"conditions", difficulty:"hard", questionText:"What is the output?\n\nx = 3\ny = 0\nif x and not y:\n    print('go')\nelse:\n    print('stop')", code:"x = 3\ny = 0\nif x and not y:\n    print('go')\nelse:\n    print('stop')", options:["go","stop","True","Error"], correctIndex:0, explanation:"3 is truthy and not 0 is True.", errorType:"logical"},
+    {skill:"conditions", difficulty:"hard", questionText:"What does this print?\n\nn = 12\nif n % 3 == 0:\n    if n % 4 == 0:\n        print('both')\n    else:\n        print('three')\nelse:\n    print('neither')", code:"n = 12\nif n % 3 == 0:\n    if n % 4 == 0:\n        print('both')\n    else:\n        print('three')\nelse:\n    print('neither')", options:["both","three","neither","Error"], correctIndex:0, explanation:"12 is divisible by both 3 and 4.", errorType:"logical"},
+  ],
+  loops: [
+    {skill:"loops", difficulty:"easy", questionText:"What does this print?\n\nfor i in range(2):\n    print('Hi')", code:"for i in range(2):\n    print('Hi')", options:["Hi","Hi Hi","0 1","Error"], correctIndex:1, explanation:"The loop runs two times.", errorType:"conceptual"},
+    {skill:"loops", difficulty:"easy", questionText:"What is the first value from range(4)?", options:["0","1","3","4"], correctIndex:0, explanation:"range starts at 0 by default.", errorType:"conceptual"},
+    {skill:"loops", difficulty:"medium", questionText:"What is the output?\n\ntotal = 1\nfor n in [2, 3]:\n    total *= n\nprint(total)", code:"total = 1\nfor n in [2, 3]:\n    total *= n\nprint(total)", options:["5","6","1","Error"], correctIndex:1, explanation:"1*2*3 = 6.", errorType:"logical"},
+    {skill:"loops", difficulty:"medium", questionText:"What does this print?\n\nfor ch in 'abc':\n    if ch == 'b':\n        continue\n    print(ch, end='')", code:"for ch in 'abc':\n    if ch == 'b':\n        continue\n    print(ch, end='')", options:["abc","ac","b","Error"], correctIndex:1, explanation:"continue skips b, so a and c are printed.", errorType:"conceptual"},
+    {skill:"loops", difficulty:"hard", questionText:"What is the output?\n\nitems = []\nfor i in range(3):\n    if i % 2 == 0:\n        items.append(i)\nprint(items)", code:"items = []\nfor i in range(3):\n    if i % 2 == 0:\n        items.append(i)\nprint(items)", options:["[0, 2]","[1]","[0, 1, 2]","[]"], correctIndex:0, explanation:"Only 0 and 2 are even.", errorType:"logical"},
+    {skill:"loops", difficulty:"hard", questionText:"What does this print?\n\ncount = 0\nfor i in range(2):\n    for j in range(2):\n        count += 1\nprint(count)", code:"count = 0\nfor i in range(2):\n    for j in range(2):\n        count += 1\nprint(count)", options:["2","3","4","5"], correctIndex:2, explanation:"2 outer iterations times 2 inner iterations equals 4.", errorType:"logical"},
+  ],
+  functions: [
+    {skill:"functions", difficulty:"easy", questionText:"What keyword sends a value back from a function?", options:["print","return","def","send"], correctIndex:1, explanation:"return sends a value back to the caller.", errorType:"conceptual"},
+    {skill:"functions", difficulty:"easy", questionText:"What is the output?\n\ndef hello():\n    return 'Hi'\nprint(hello())", code:"def hello():\n    return 'Hi'\nprint(hello())", options:["hello","Hi","None","Error"], correctIndex:1, explanation:"hello() returns 'Hi', then print displays it.", errorType:"logical"},
+    {skill:"functions", difficulty:"medium", questionText:"What does this print?\n\ndef multiply(a, b):\n    return a * b\nprint(multiply(3, 4))", code:"def multiply(a, b):\n    return a * b\nprint(multiply(3, 4))", options:["7","12","34","Error"], correctIndex:1, explanation:"3 * 4 = 12.", errorType:"logical"},
+    {skill:"functions", difficulty:"medium", questionText:"What is the output?\n\ndef show(x=2):\n    return x + 1\nprint(show(5))", code:"def show(x=2):\n    return x + 1\nprint(show(5))", options:["3","5","6","Error"], correctIndex:2, explanation:"The argument 5 overrides the default 2.", errorType:"syntax"},
+    {skill:"functions", difficulty:"hard", questionText:"What does this print?\n\nx = 5\ndef change():\n    x = 9\n    return x\nprint(change(), x)", code:"x = 5\ndef change():\n    x = 9\n    return x\nprint(change(), x)", options:["9 5","9 9","5 5","Error"], correctIndex:0, explanation:"The x inside change is local. The global x remains 5.", errorType:"conceptual"},
+    {skill:"functions", difficulty:"hard", questionText:"What is the output?\n\ndef outer(n):\n    def inner():\n        return n + 2\n    return inner()\nprint(outer(4))", code:"def outer(n):\n    def inner():\n        return n + 2\n    return inner()\nprint(outer(4))", options:["4","6","inner","Error"], correctIndex:1, explanation:"inner can access n from outer. 4 + 2 = 6.", errorType:"conceptual"},
+  ],
+  lists: [
+    {skill:"lists", difficulty:"easy", questionText:"What is the output?\n\ncolors = ['red', 'blue']\nprint(colors[0])", code:"colors = ['red', 'blue']\nprint(colors[0])", options:["red","blue","0","Error"], correctIndex:0, explanation:"Index 0 is the first item.", errorType:"conceptual"},
+    {skill:"lists", difficulty:"easy", questionText:"Which method adds an item to the end of a list?", options:["add()","append()","push()","insert_end()"], correctIndex:1, explanation:"append() adds an item to the end of a list.", errorType:"syntax"},
+    {skill:"lists", difficulty:"medium", questionText:"What does this print?\n\nnums = [1, 2, 3]\nnums[1] = 9\nprint(nums)", code:"nums = [1, 2, 3]\nnums[1] = 9\nprint(nums)", options:["[1, 2, 3]","[1, 9, 3]","[9, 2, 3]","Error"], correctIndex:1, explanation:"Index 1 is the second item, so 2 becomes 9.", errorType:"logical"},
+    {skill:"lists", difficulty:"medium", questionText:"What is the output?\n\nletters = ['a', 'b', 'c', 'd']\nprint(letters[:2])", code:"letters = ['a', 'b', 'c', 'd']\nprint(letters[:2])", options:["['a', 'b']","['a', 'b', 'c']","['c', 'd']","Error"], correctIndex:0, explanation:"[:2] takes indexes 0 and 1.", errorType:"syntax"},
+    {skill:"lists", difficulty:"hard", questionText:"What does this print?\n\na = [[1], [2]]\nb = a[0]\nb.append(3)\nprint(a)", code:"a = [[1], [2]]\nb = a[0]\nb.append(3)\nprint(a)", options:["[[1, 3], [2]]","[[1], [2]]","[[3], [2]]","Error"], correctIndex:0, explanation:"b references the first inner list, so a[0] changes.", errorType:"conceptual"},
+    {skill:"lists", difficulty:"hard", questionText:"What is the output?\n\nnums = [1, 2, 3, 4]\nprint(nums[-3:-1])", code:"nums = [1, 2, 3, 4]\nprint(nums[-3:-1])", options:["[2, 3]","[1, 2]","[3, 4]","[2, 3, 4]"], correctIndex:0, explanation:"-3 points to 2 and -1 stops before 4.", errorType:"syntax"},
+  ],
+  oop: [
+    {skill:"oop", difficulty:"easy", questionText:"What does self usually refer to in an instance method?", options:["The current object","The parent class","A global variable","The module"], correctIndex:0, explanation:"self refers to the current object instance.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"easy", questionText:"What is the output?\n\nclass Box:\n    pass\nb = Box()\nprint(type(b).__name__)", code:"class Box:\n    pass\nb = Box()\nprint(type(b).__name__)", options:["Box","b","object","Error"], correctIndex:0, explanation:"b is an instance of Box.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"medium", questionText:"What does this print?\n\nclass Person:\n    def __init__(self, age):\n        self.age = age\np = Person(20)\np.age += 1\nprint(p.age)", code:"class Person:\n    def __init__(self, age):\n        self.age = age\np = Person(20)\np.age += 1\nprint(p.age)", options:["20","21","age","Error"], correctIndex:1, explanation:"p.age starts at 20 and is incremented to 21.", errorType:"logical"},
+    {skill:"oop", difficulty:"medium", questionText:"What is the output?\n\nclass Parent:\n    def value(self):\n        return 1\nclass Child(Parent):\n    pass\nprint(Child().value())", code:"class Parent:\n    def value(self):\n        return 1\nclass Child(Parent):\n    pass\nprint(Child().value())", options:["1","0","None","Error"], correctIndex:0, explanation:"Child inherits value() from Parent.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"hard", questionText:"What is the output?\n\nclass Base:\n    kind = 'base'\nclass Sub(Base):\n    kind = 'sub'\nprint(Base.kind, Sub.kind)", code:"class Base:\n    kind = 'base'\nclass Sub(Base):\n    kind = 'sub'\nprint(Base.kind, Sub.kind)", options:["base sub","sub sub","base base","Error"], correctIndex:0, explanation:"Sub overrides kind, while Base.kind remains base.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"hard", questionText:"What does this print?\n\nclass A:\n    def show(self):\n        return 'A'\nclass B(A):\n    def show(self):\n        return super().show() + 'B'\nprint(B().show())", code:"class A:\n    def show(self):\n        return 'A'\nclass B(A):\n    def show(self):\n        return super().show() + 'B'\nprint(B().show())", options:["A","B","AB","Error"], correctIndex:2, explanation:"super().show() returns 'A', then 'B' is added.", errorType:"syntax"},
+  ],
+};
+
+const EXTRA_SUPPLEMENTAL_QUESTION_BANK = {
+  variables: [
+    {skill:"variables", difficulty:"easy", questionText:"What is the output?\n\nage = 20\nprint(age)", code:"age = 20\nprint(age)", options:["age","20","'20'","Error"], correctIndex:1, explanation:"print(age) outputs the value 20.", errorType:"conceptual"},
+    {skill:"variables", difficulty:"easy", questionText:"Which assignment is valid Python?", options:["5 = x","x = 5","x :=: 5","int x = 5"], correctIndex:1, explanation:"A variable name goes on the left side of =.", errorType:"syntax"},
+    {skill:"variables", difficulty:"easy", questionText:"What is the type of True?", options:["int","str","bool","float"], correctIndex:2, explanation:"True is a Boolean value.", errorType:"conceptual"},
+    {skill:"variables", difficulty:"medium", questionText:"What does this print?\n\nx = 3\ny = 4\nprint(str(x) + str(y))", code:"x = 3\ny = 4\nprint(str(x) + str(y))", options:["7","34","'7'","Error"], correctIndex:1, explanation:"str(x) and str(y) are strings, so + concatenates them.", errorType:"conceptual"},
+    {skill:"variables", difficulty:"medium", questionText:"What is the output?\n\nx = 10\ny = 2\nx //= y\nprint(x)", code:"x = 10\ny = 2\nx //= y\nprint(x)", options:["5","5.0","10","Error"], correctIndex:0, explanation:"//= performs floor division and stores the result.", errorType:"logical"},
+    {skill:"variables", difficulty:"medium", questionText:"What does this print?\n\na = 1\nb = 2\na, b = b, a\nprint(a, b)", code:"a = 1\nb = 2\na, b = b, a\nprint(a, b)", options:["1 2","2 1","2 2","Error"], correctIndex:1, explanation:"Tuple assignment swaps the values.", errorType:"logical"},
+    {skill:"variables", difficulty:"hard", questionText:"What is the output?\n\nx = [1]\ny = x\nx.append(2)\nprint(y)", code:"x = [1]\ny = x\nx.append(2)\nprint(y)", options:["[1]","[1, 2]","[2]","Error"], correctIndex:1, explanation:"y references the same list as x, so it sees the appended value.", errorType:"conceptual"},
+    {skill:"variables", difficulty:"hard", questionText:"What does this print?\n\na = 3\nb = a\na = a * 2\nprint(a, b)", code:"a = 3\nb = a\na = a * 2\nprint(a, b)", options:["6 3","6 6","3 3","3 6"], correctIndex:0, explanation:"b keeps the old integer value 3 while a becomes 6.", errorType:"logical"},
+    {skill:"variables", difficulty:"hard", questionText:"What is the output?\n\nx = 1\nx, y = x + 1, x + 2\nprint(x, y)", code:"x = 1\nx, y = x + 1, x + 2\nprint(x, y)", options:["2 3","2 4","1 3","Error"], correctIndex:0, explanation:"The right side is evaluated using the old x value first.", errorType:"logical"},
+  ],
+  conditions: [
+    {skill:"conditions", difficulty:"easy", questionText:"What does this print?\n\nif False:\n    print('A')\nelse:\n    print('B')", code:"if False:\n    print('A')\nelse:\n    print('B')", options:["A","B","False","Error"], correctIndex:1, explanation:"False skips the if block and runs else.", errorType:"conceptual"},
+    {skill:"conditions", difficulty:"easy", questionText:"Which operator means 'not equal' in Python?", options:["!=","<>","!==","not="], correctIndex:0, explanation:"!= checks whether two values are different.", errorType:"syntax"},
+    {skill:"conditions", difficulty:"easy", questionText:"What is the result of 3 > 1?", options:["True","False","3","Error"], correctIndex:0, explanation:"3 is greater than 1.", errorType:"conceptual"},
+    {skill:"conditions", difficulty:"medium", questionText:"What is printed?\n\nx = 4\nif x % 2 == 0:\n    print('even')\nelse:\n    print('odd')", code:"x = 4\nif x % 2 == 0:\n    print('even')\nelse:\n    print('odd')", options:["even","odd","4","Error"], correctIndex:0, explanation:"4 % 2 is 0, so the number is even.", errorType:"logical"},
+    {skill:"conditions", difficulty:"medium", questionText:"What does this print?\n\nx = 10\nif x < 5 or x == 10:\n    print('yes')\nelse:\n    print('no')", code:"x = 10\nif x < 5 or x == 10:\n    print('yes')\nelse:\n    print('no')", options:["yes","no","True","Error"], correctIndex:0, explanation:"or is True because x == 10 is True.", errorType:"logical"},
+    {skill:"conditions", difficulty:"medium", questionText:"What is the output?\n\nvalue = None\nif value is None:\n    print('missing')\nelse:\n    print('set')", code:"value = None\nif value is None:\n    print('missing')\nelse:\n    print('set')", options:["missing","set","None","Error"], correctIndex:0, explanation:"value is exactly None.", errorType:"conceptual"},
+    {skill:"conditions", difficulty:"hard", questionText:"What does this print?\n\nx = 2\nprint('A' if x > 5 else 'B' if x > 1 else 'C')", code:"x = 2\nprint('A' if x > 5 else 'B' if x > 1 else 'C')", options:["A","B","C","Error"], correctIndex:1, explanation:"x > 5 is False, but x > 1 is True, so B is chosen.", errorType:"logical"},
+    {skill:"conditions", difficulty:"hard", questionText:"What is the output?\n\nx = 0\ny = 5\nif x or y:\n    print('true')\nelse:\n    print('false')", code:"x = 0\ny = 5\nif x or y:\n    print('true')\nelse:\n    print('false')", options:["true","false","5","Error"], correctIndex:0, explanation:"0 is falsy but 5 is truthy, so x or y is truthy.", errorType:"conceptual"},
+    {skill:"conditions", difficulty:"hard", questionText:"What does this print?\n\nscore = 85\nif score >= 90:\n    print('A')\nelif score >= 80:\n    print('B')\nelif score >= 70:\n    print('C')\nelse:\n    print('D')", code:"score = 85\nif score >= 90:\n    print('A')\nelif score >= 80:\n    print('B')\nelif score >= 70:\n    print('C')\nelse:\n    print('D')", options:["A","B","C","D"], correctIndex:1, explanation:"85 is not at least 90, but it is at least 80.", errorType:"logical"},
+  ],
+  loops: [
+    {skill:"loops", difficulty:"easy", questionText:"How many times does range(3) loop?", options:["2","3","4","Error"], correctIndex:1, explanation:"range(3) produces 0, 1, and 2, so it has 3 values.", errorType:"conceptual"},
+    {skill:"loops", difficulty:"easy", questionText:"What does this print?\n\nfor n in [5, 6]:\n    print(n)", code:"for n in [5, 6]:\n    print(n)", options:["5 6","0 1","n n","Error"], correctIndex:0, explanation:"The loop prints each list item.", errorType:"conceptual"},
+    {skill:"loops", difficulty:"easy", questionText:"Which keyword stops a loop immediately?", options:["stop","break","continue","return"], correctIndex:1, explanation:"break exits the current loop.", errorType:"syntax"},
+    {skill:"loops", difficulty:"medium", questionText:"What does this print?\n\ns = 0\nfor i in range(4):\n    s += i\nprint(s)", code:"s = 0\nfor i in range(4):\n    s += i\nprint(s)", options:["4","6","10","Error"], correctIndex:1, explanation:"range(4) is 0,1,2,3 and their sum is 6.", errorType:"logical"},
+    {skill:"loops", difficulty:"medium", questionText:"What is the output?\n\ni = 1\nwhile i < 5:\n    i += 2\nprint(i)", code:"i = 1\nwhile i < 5:\n    i += 2\nprint(i)", options:["3","5","6","Error"], correctIndex:1, explanation:"i goes 1 -> 3 -> 5, then the loop stops.", errorType:"logical"},
+    {skill:"loops", difficulty:"medium", questionText:"What does this print?\n\nfor i in range(5):\n    if i == 2:\n        break\n    print(i, end='')", code:"for i in range(5):\n    if i == 2:\n        break\n    print(i, end='')", options:["01","012","01234","Error"], correctIndex:0, explanation:"The loop stops before printing 2.", errorType:"conceptual"},
+    {skill:"loops", difficulty:"hard", questionText:"What is the output?\n\npairs = []\nfor i in range(2):\n    for j in range(3):\n        if j == 1:\n            pairs.append((i, j))\nprint(pairs)", code:"pairs = []\nfor i in range(2):\n    for j in range(3):\n        if j == 1:\n            pairs.append((i, j))\nprint(pairs)", options:["[(0, 1), (1, 1)]","[(1, 0), (1, 1)]","[(0, 1)]","[]"], correctIndex:0, explanation:"For each i, only j == 1 is appended.", errorType:"logical"},
+    {skill:"loops", difficulty:"hard", questionText:"What does this print?\n\nnums = [1, 2, 3]\nout = []\nfor n in nums:\n    out.append(n * n)\nprint(out)", code:"nums = [1, 2, 3]\nout = []\nfor n in nums:\n    out.append(n * n)\nprint(out)", options:["[1, 4, 9]","[2, 4, 6]","[1, 2, 3]","Error"], correctIndex:0, explanation:"Each number is squared and appended.", errorType:"logical"},
+    {skill:"loops", difficulty:"hard", questionText:"What is the output?\n\ntext = 'aba'\ncount = 0\nfor ch in text:\n    if ch == 'a':\n        count += 1\nprint(count)", code:"text = 'aba'\ncount = 0\nfor ch in text:\n    if ch == 'a':\n        count += 1\nprint(count)", options:["1","2","3","Error"], correctIndex:1, explanation:"The letter a appears twice.", errorType:"logical"},
+  ],
+  functions: [
+    {skill:"functions", difficulty:"easy", questionText:"Which keyword starts a function definition?", options:["func","def","function","lambda"], correctIndex:1, explanation:"Python uses def to define a function.", errorType:"syntax"},
+    {skill:"functions", difficulty:"easy", questionText:"What does this print?\n\ndef give():\n    return 3\nprint(give())", code:"def give():\n    return 3\nprint(give())", options:["give","3","None","Error"], correctIndex:1, explanation:"give() returns 3.", errorType:"logical"},
+    {skill:"functions", difficulty:"easy", questionText:"What does a parameter receive?", options:["A function name","An argument value","A file","A loop"], correctIndex:1, explanation:"A parameter receives the argument passed during the function call.", errorType:"conceptual"},
+    {skill:"functions", difficulty:"medium", questionText:"What is the output?\n\ndef add_one(n):\n    return n + 1\nprint(add_one(6))", code:"def add_one(n):\n    return n + 1\nprint(add_one(6))", options:["6","7","1","Error"], correctIndex:1, explanation:"n is 6, so n + 1 is 7.", errorType:"logical"},
+    {skill:"functions", difficulty:"medium", questionText:"What does this print?\n\ndef greet(name='Sam'):\n    return name\nprint(greet('Lina'))", code:"def greet(name='Sam'):\n    return name\nprint(greet('Lina'))", options:["Sam","Lina","name","Error"], correctIndex:1, explanation:"The provided argument overrides the default value.", errorType:"syntax"},
+    {skill:"functions", difficulty:"medium", questionText:"What is the output?\n\ndef f(a, b):\n    return b - a\nprint(f(2, 8))", code:"def f(a, b):\n    return b - a\nprint(f(2, 8))", options:["6","10","-6","Error"], correctIndex:0, explanation:"b - a is 8 - 2 = 6.", errorType:"logical"},
+    {skill:"functions", difficulty:"hard", questionText:"What does this print?\n\ndef f(x):\n    return x * 2\nresult = f(f(2))\nprint(result)", code:"def f(x):\n    return x * 2\nresult = f(f(2))\nprint(result)", options:["4","8","2","Error"], correctIndex:1, explanation:"f(2) is 4, then f(4) is 8.", errorType:"logical"},
+    {skill:"functions", difficulty:"hard", questionText:"What is the output?\n\nx = 1\ndef f():\n    return x + 2\nprint(f())", code:"x = 1\ndef f():\n    return x + 2\nprint(f())", options:["1","2","3","Error"], correctIndex:2, explanation:"The function reads the global x value 1 and adds 2.", errorType:"conceptual"},
+    {skill:"functions", difficulty:"hard", questionText:"What does this print?\n\ndef make(n):\n    def add(x):\n        return x + n\n    return add\nplus3 = make(3)\nprint(plus3(4))", code:"def make(n):\n    def add(x):\n        return x + n\n    return add\nplus3 = make(3)\nprint(plus3(4))", options:["3","4","7","Error"], correctIndex:2, explanation:"plus3 remembers n = 3, so 4 + 3 = 7.", errorType:"conceptual"},
+  ],
+  lists: [
+    {skill:"lists", difficulty:"easy", questionText:"What is the first index in a Python list?", options:["0","1","-1","None"], correctIndex:0, explanation:"Python lists are zero-indexed.", errorType:"conceptual"},
+    {skill:"lists", difficulty:"easy", questionText:"What does this print?\n\nitems = ['a', 'b']\nprint(len(items))", code:"items = ['a', 'b']\nprint(len(items))", options:["1","2","3","Error"], correctIndex:1, explanation:"The list has 2 items.", errorType:"conceptual"},
+    {skill:"lists", difficulty:"easy", questionText:"Which expression gets the last item of nums?", options:["nums[0]","nums[-1]","nums[last]","nums.end"], correctIndex:1, explanation:"nums[-1] accesses the last item.", errorType:"syntax"},
+    {skill:"lists", difficulty:"medium", questionText:"What is the output?\n\nnums = [3, 1, 2]\nnums.sort()\nprint(nums)", code:"nums = [3, 1, 2]\nnums.sort()\nprint(nums)", options:["[1, 2, 3]","[3, 1, 2]","[3, 2, 1]","Error"], correctIndex:0, explanation:"sort() orders the list ascending.", errorType:"logical"},
+    {skill:"lists", difficulty:"medium", questionText:"What does this print?\n\nnums = [1, 2, 3]\nprint(nums[1:])", code:"nums = [1, 2, 3]\nprint(nums[1:])", options:["[1, 2]","[2, 3]","[1, 2, 3]","Error"], correctIndex:1, explanation:"[1:] starts at index 1 and goes to the end.", errorType:"syntax"},
+    {skill:"lists", difficulty:"medium", questionText:"What is the output?\n\na = [1, 2]\nb = [3]\nprint(a + b)", code:"a = [1, 2]\nb = [3]\nprint(a + b)", options:["[1, 2, 3]","[4, 2]","[1, 2][3]","Error"], correctIndex:0, explanation:"+ concatenates lists.", errorType:"conceptual"},
+    {skill:"lists", difficulty:"hard", questionText:"What does this print?\n\nnums = [1, 2, 3]\ncopy = nums[:]\ncopy.append(4)\nprint(nums)", code:"nums = [1, 2, 3]\ncopy = nums[:]\ncopy.append(4)\nprint(nums)", options:["[1, 2, 3]","[1, 2, 3, 4]","[4]","Error"], correctIndex:0, explanation:"nums[:] creates a shallow copy, so nums is unchanged.", errorType:"conceptual"},
+    {skill:"lists", difficulty:"hard", questionText:"What is the output?\n\nmatrix = [[1, 2], [3, 4]]\nprint(matrix[1][0])", code:"matrix = [[1, 2], [3, 4]]\nprint(matrix[1][0])", options:["1","2","3","4"], correctIndex:2, explanation:"matrix[1] is [3, 4], and index 0 is 3.", errorType:"logical"},
+    {skill:"lists", difficulty:"hard", questionText:"What does this print?\n\nnums = [1, 2, 3, 4]\nprint(nums[::2])", code:"nums = [1, 2, 3, 4]\nprint(nums[::2])", options:["[1, 3]","[2, 4]","[1, 2]","Error"], correctIndex:0, explanation:"The step 2 takes every second item starting at index 0.", errorType:"syntax"},
+  ],
+  oop: [
+    {skill:"oop", difficulty:"easy", questionText:"Which keyword defines a class?", options:["def","class","object","new"], correctIndex:1, explanation:"class starts a class definition.", errorType:"syntax"},
+    {skill:"oop", difficulty:"easy", questionText:"What creates an object from class Car?", options:["Car()","new Car","object Car","def Car"], correctIndex:0, explanation:"Calling the class creates an instance.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"easy", questionText:"What is an attribute?", options:["Data stored on an object","A loop","A module","A comparison"], correctIndex:0, explanation:"Attributes store data on objects.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"medium", questionText:"What does this print?\n\nclass A:\n    x = 5\nprint(A.x)", code:"class A:\n    x = 5\nprint(A.x)", options:["5","x","A","Error"], correctIndex:0, explanation:"A.x accesses the class attribute x.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"medium", questionText:"What is the output?\n\nclass Item:\n    def __init__(self, name):\n        self.name = name\nobj = Item('Book')\nprint(obj.name)", code:"class Item:\n    def __init__(self, name):\n        self.name = name\nobj = Item('Book')\nprint(obj.name)", options:["Book","Item","name","Error"], correctIndex:0, explanation:"__init__ stores 'Book' in obj.name.", errorType:"logical"},
+    {skill:"oop", difficulty:"medium", questionText:"What does this print?\n\nclass A:\n    def speak(self):\n        return 'A'\nclass B(A):\n    pass\nprint(B().speak())", code:"class A:\n    def speak(self):\n        return 'A'\nclass B(A):\n    pass\nprint(B().speak())", options:["A","B","None","Error"], correctIndex:0, explanation:"B inherits speak() from A.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"hard", questionText:"What is the output?\n\nclass Counter:\n    count = 0\n    def inc(self):\n        Counter.count += 1\nc = Counter()\nc.inc()\nc.inc()\nprint(Counter.count)", code:"class Counter:\n    count = 0\n    def inc(self):\n        Counter.count += 1\nc = Counter()\nc.inc()\nc.inc()\nprint(Counter.count)", options:["0","1","2","Error"], correctIndex:2, explanation:"The class variable count is incremented twice.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"hard", questionText:"What does this print?\n\nclass A:\n    def name(self):\n        return 'A'\nclass B(A):\n    def name(self):\n        return 'B'\nprint(B().name())", code:"class A:\n    def name(self):\n        return 'A'\nclass B(A):\n    def name(self):\n        return 'B'\nprint(B().name())", options:["A","B","AB","Error"], correctIndex:1, explanation:"B overrides the name method.", errorType:"conceptual"},
+    {skill:"oop", difficulty:"hard", questionText:"What is the output?\n\nclass A:\n    def __str__(self):\n        return 'alpha'\nprint(str(A()))", code:"class A:\n    def __str__(self):\n        return 'alpha'\nprint(str(A()))", options:["alpha","A","<A object>","Error"], correctIndex:0, explanation:"str(A()) calls the __str__ method.", errorType:"syntax"},
+  ],
+};
+
+Object.entries(EXTRA_SUPPLEMENTAL_QUESTION_BANK).forEach(([skillId, questions]) => {
+  SUPPLEMENTAL_QUESTION_BANK[skillId].push(...questions);
+});
+
+// ─── QUESTION_BANK: نفس البنية المنظمة (easy/medium/hard) من المنصة الأتكيفية ──
+// هذا يضمن أن أسئلة البري والبوست تيست مطابقة تماماً لأسئلة المنصة الأتكيفية
+const QUESTION_BANK = {
+  variables: {
+    easy: [
+      {questionText:"What will be the output?\n\nx = 5\ny = 3\nprint(x + y)", code:"x = 5\ny = 3\nprint(x + y)", options:["53","8","2","Error"], correctIndex:1, explanation:"5 + 3 = 8.", errorType:"conceptual"},
+      {questionText:"What is the type of this value?\n\nval = 3.14\nprint(type(val))", code:"val = 3.14\nprint(type(val))", options:["<class 'int'>","<class 'float'>","<class 'str'>","<class 'num'>"], correctIndex:1, explanation:"3.14 is a float.", errorType:"conceptual"},
+      {questionText:"What will this print?\n\nname = 'Alice'\nprint(name)", code:"name = 'Alice'\nprint(name)", options:["'Alice'","Alice","name","Error"], correctIndex:1, explanation:"print() outputs the value without quotes.", errorType:"syntax"},
+      {questionText:"Which of these correctly assigns the integer 10 to a variable?", options:["x == 10","x = 10","x := 10","int x = 10"], correctIndex:1, explanation:"= is the assignment operator in Python.", errorType:"syntax"},
+      {questionText:"What is the output?\n\nx = 7\nprint(x)", code:"x = 7\nprint(x)", options:["'7'","7","x","Error"], correctIndex:1, explanation:"print(x) outputs the stored integer value 7.", errorType:"conceptual"},
+      {questionText:"What type is the value 'hello'?", options:["int","float","bool","str"], correctIndex:3, explanation:"Text in quotes is a string (str).", errorType:"conceptual"},
+      {questionText:"What is the output?\n\na = 3\nb = a\nprint(b)", code:"a = 3\nb = a\nprint(b)", options:["a","3","b","Error"], correctIndex:1, explanation:"b is assigned the value of a, which is 3.", errorType:"conceptual"},
+      {questionText:"Which of these is NOT a valid variable name?", options:["my_var","_data","2count","result"], correctIndex:2, explanation:"Variable names cannot start with a digit.", errorType:"syntax"},
+      {questionText:"What does this print?\n\nx = 10\nprint(x - 4)", code:"x = 10\nprint(x - 4)", options:["4","6","14","Error"], correctIndex:1, explanation:"10 - 4 = 6.", errorType:"logical"},
+    ],
+    medium: [
+      {questionText:"What is the output?\n\nx = 10\nx += 5\nx *= 2\nprint(x)", code:"x = 10\nx += 5\nx *= 2\nprint(x)", options:["25","30","20","35"], correctIndex:1, explanation:"x=10, then 10+5=15, then 15*2=30.", errorType:"logical"},
+      {questionText:"What does this print?\n\na = '5'\nb = 5\nprint(a * b)", code:"a = '5'\nb = 5\nprint(a * b)", options:["25","'55555'","55555","Error"], correctIndex:2, explanation:"String * int repeats the string: '5' * 5 = '55555'.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nx, y, z = 1, 2, 3\nprint(y)", code:"x, y, z = 1, 2, 3\nprint(y)", options:["1","2","3","Error"], correctIndex:1, explanation:"Tuple unpacking: x=1, y=2, z=3.", errorType:"syntax"},
+      {questionText:"What will this print?\n\nx = None\nprint(x == None)", code:"x = None\nprint(x == None)", options:["None","False","True","Error"], correctIndex:2, explanation:"None == None is True.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nx = 9\nx **= 2\nprint(x)", code:"x = 9\nx **= 2\nprint(x)", options:["18","81","9","Error"], correctIndex:1, explanation:"**= raises to power: 9**2 = 81.", errorType:"logical"},
+      {questionText:"What does this print?\n\na = 'Py'\nb = 'thon'\nprint(a + b)", code:"a = 'Py'\nb = 'thon'\nprint(a + b)", options:["Py thon","Python","'Py'+'thon'","Error"], correctIndex:1, explanation:"+ concatenates strings: 'Py' + 'thon' = 'Python'.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nx = 15\nprint(x % 4)", code:"x = 15\nprint(x % 4)", options:["3","4","1","0"], correctIndex:0, explanation:"15 % 4 = 3 (remainder after dividing 15 by 4).", errorType:"logical"},
+      {questionText:"What does this print?\n\nval = int('42')\nprint(val + 8)", code:"val = int('42')\nprint(val + 8)", options:["428","50","Error","42"], correctIndex:1, explanation:"int('42') converts to integer 42. 42+8=50.", errorType:"conceptual"},
+      {questionText:"What is the result?\n\nx = 5\ny = 2\nprint(x // y)", code:"x = 5\ny = 2\nprint(x // y)", options:["2.5","2","3","1"], correctIndex:1, explanation:"// is floor division: 5//2=2.", errorType:"logical"},
+    ],
+    hard: [
+      {questionText:"What is the output?\n\nx = y = z = 5\ny = 10\nprint(x, y, z)", code:"x = y = z = 5\ny = 10\nprint(x, y, z)", options:["5 10 5","10 10 10","5 5 5","5 10 10"], correctIndex:0, explanation:"Chained assignment gives all vars value 5. Changing y only affects y.", errorType:"conceptual"},
+      {questionText:"What does this output?\n\na = 5\ndef f():\n    a = 10\nf()\nprint(a)", code:"a = 5\ndef f():\n    a = 10\nf()\nprint(a)", options:["10","5","Error","None"], correctIndex:1, explanation:"f() creates a local a. Global a stays 5.", errorType:"conceptual"},
+      {questionText:"What is the result?\n\nx = 10\ny = x\nx = x + 1\nprint(x, y)", code:"x = 10\ny = x\nx = x + 1\nprint(x, y)", options:["11 11","11 10","10 10","10 11"], correctIndex:1, explanation:"y=10 at assignment. x becomes 11, y stays 10.", errorType:"logical"},
+      {questionText:"What is the output?\n\nx = [1, 2, 3]\ny = x\ny[0] = 99\nprint(x[0])", code:"x = [1, 2, 3]\ny = x\ny[0] = 99\nprint(x[0])", options:["1","99","Error","None"], correctIndex:1, explanation:"y and x reference the same list, so mutating via y changes x.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\na, b = 1, 2\na, b = b, a + b\nprint(a, b)", code:"a, b = 1, 2\na, b = b, a + b\nprint(a, b)", options:["2 3","1 3","2 1","3 2"], correctIndex:0, explanation:"Right side is evaluated first with old values: b=2, a+b=3. So a=2, b=3.", errorType:"logical"},
+      {questionText:"What is the output?\n\ndef f():\n    global x\n    x = 20\nx = 5\nf()\nprint(x)", code:"def f():\n    global x\n    x = 20\nx = 5\nf()\nprint(x)", options:["5","20","Error","None"], correctIndex:1, explanation:"global keyword allows f() to modify the global x. x becomes 20.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nx = 0.1 + 0.2\nprint(x == 0.3)", code:"x = 0.1 + 0.2\nprint(x == 0.3)", options:["True","False","Error","0.3"], correctIndex:1, explanation:"Floating point arithmetic is imprecise; 0.1+0.2 is not exactly 0.3.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nprint(type(1/2).__name__)", code:"print(type(1/2).__name__)", options:["int","float","str","Error"], correctIndex:1, explanation:"Division always produces a float in Python 3.", errorType:"conceptual"},
+    ],
+  },
+  conditions: {
+    easy: [
+      {questionText:"What does this print?\n\nif True:\n    print('yes')\nelse:\n    print('no')", code:"if True:\n    print('yes')\nelse:\n    print('no')", options:["yes","no","True","Error"], correctIndex:0, explanation:"The condition is True, so 'yes' prints.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nx = 3\nif x > 5:\n    print('big')\nelse:\n    print('small')", code:"x = 3\nif x > 5:\n    print('big')\nelse:\n    print('small')", options:["big","small","3","Error"], correctIndex:1, explanation:"3 > 5 is False, so 'small' prints.", errorType:"logical"},
+      {questionText:"Which operator checks equality in Python?", options:["=","==","===","eq"], correctIndex:1, explanation:"== compares two values for equality.", errorType:"syntax"},
+      {questionText:"What does this print?\n\nif not False:\n    print('A')\nelse:\n    print('B')", code:"if not False:\n    print('A')\nelse:\n    print('B')", options:["A","B","False","Error"], correctIndex:0, explanation:"not False = True, so 'A' prints.", errorType:"logical"},
+      {questionText:"What is printed?\n\nx = 10\nif x == 10:\n    print('ten')", code:"x = 10\nif x == 10:\n    print('ten')", options:["ten","10","True","Error"], correctIndex:0, explanation:"x equals 10, so the condition is True and 'ten' prints.", errorType:"conceptual"},
+      {questionText:"What is the result of 5 > 3?", options:["True","False","5","Error"], correctIndex:0, explanation:"5 is greater than 3, so the expression evaluates to True.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nif 0:\n    print('yes')\nelse:\n    print('no')", code:"if 0:\n    print('yes')\nelse:\n    print('no')", options:["yes","no","0","Error"], correctIndex:1, explanation:"0 is falsy in Python, so the else branch runs.", errorType:"conceptual"},
+      {questionText:"Which keyword handles an alternative branch if the first condition is False?", options:["elif","else","or","and"], correctIndex:1, explanation:"else runs when all preceding conditions are False.", errorType:"syntax"},
+      {questionText:"What is the output?\n\nx = 4\nif x != 5:\n    print('not five')", code:"x = 4\nif x != 5:\n    print('not five')", options:["not five","five","4","Error"], correctIndex:0, explanation:"4 != 5 is True, so 'not five' prints.", errorType:"logical"},
+    ],
+    medium: [
+      {questionText:"What is the output?\n\nx = 4\nif x % 2 == 0 and x > 2:\n    print('yes')\nelse:\n    print('no')", code:"x = 4\nif x % 2 == 0 and x > 2:\n    print('yes')\nelse:\n    print('no')", options:["yes","no","4","Error"], correctIndex:0, explanation:"4%2==0 is True and 4>2 is True, so 'yes'.", errorType:"logical"},
+      {questionText:"What does this print?\n\nval = 7\nif val < 5:\n    print('low')\nelif val < 10:\n    print('mid')\nelse:\n    print('high')", code:"val = 7\nif val < 5:\n    print('low')\nelif val < 10:\n    print('mid')\nelse:\n    print('high')", options:["low","mid","high","Error"], correctIndex:1, explanation:"7<5 is False, 7<10 is True → 'mid'.", errorType:"logical"},
+      {questionText:"What is the output?\n\nx = 5\nresult = 'positive' if x > 0 else 'non-positive'\nprint(result)", code:"x = 5\nresult = 'positive' if x > 0 else 'non-positive'\nprint(result)", options:["positive","non-positive","True","Error"], correctIndex:0, explanation:"5 > 0 is True, so result = 'positive'.", errorType:"syntax"},
+      {questionText:"What does this print?\n\nx = 3\nif x > 1 or x > 10:\n    print('pass')\nelse:\n    print('fail')", code:"x = 3\nif x > 1 or x > 10:\n    print('pass')\nelse:\n    print('fail')", options:["pass","fail","True","Error"], correctIndex:0, explanation:"x > 1 is True, so or short-circuits and the block runs.", errorType:"logical"},
+      {questionText:"What is the output?\n\nscore = 55\nif score >= 60:\n    print('pass')\nelse:\n    print('fail')", code:"score = 55\nif score >= 60:\n    print('pass')\nelse:\n    print('fail')", options:["pass","fail","55","Error"], correctIndex:1, explanation:"55 is not >= 60, so 'fail' prints.", errorType:"logical"},
+      {questionText:"What does this print?\n\na = True\nb = False\nif a and b:\n    print('both')\nelse:\n    print('not both')", code:"a = True\nb = False\nif a and b:\n    print('both')\nelse:\n    print('not both')", options:["both","not both","True","Error"], correctIndex:1, explanation:"and requires both to be True. b is False, so 'not both'.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nx = 8\nif x > 5:\n    print('A')\nelif x > 3:\n    print('B')\nelse:\n    print('C')", code:"x = 8\nif x > 5:\n    print('A')\nelif x > 3:\n    print('B')\nelse:\n    print('C')", options:["A","B","C","AB"], correctIndex:0, explanation:"8 > 5 is True, so 'A' prints and the rest is skipped.", errorType:"logical"},
+      {questionText:"What does this print?\n\nx = 0\nif not x:\n    print('empty')\nelse:\n    print('full')", code:"x = 0\nif not x:\n    print('empty')\nelse:\n    print('full')", options:["empty","full","0","Error"], correctIndex:0, explanation:"not 0 is True (0 is falsy), so 'empty' prints.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nn = 6\nif n % 2 == 0 and n % 3 == 0:\n    print('both')\nelse:\n    print('no')", code:"n = 6\nif n % 2 == 0 and n % 3 == 0:\n    print('both')\nelse:\n    print('no')", options:["both","no","6","Error"], correctIndex:0, explanation:"6 is divisible by both 2 and 3.", errorType:"logical"},
+    ],
+    hard: [
+      {questionText:"What does this print?\n\nx = 5\nprint('A' if x > 3 else 'B' if x > 1 else 'C')", code:"x = 5\nprint('A' if x > 3 else 'B' if x > 1 else 'C')", options:["A","B","C","Error"], correctIndex:0, explanation:"x>3 is True → 'A'.", errorType:"logical"},
+      {questionText:"What is the output?\n\nx = 10\nif x > 5:\n    if x > 8:\n        print('big')\n    else:\n        print('medium')\nelse:\n    print('small')", code:"x = 10\nif x > 5:\n    if x > 8:\n        print('big')\n    else:\n        print('medium')\nelse:\n    print('small')", options:["big","medium","small","Error"], correctIndex:0, explanation:"10>5 True, 10>8 True → 'big'.", errorType:"logical"},
+      {questionText:"What does this print?\n\nx = 4\ny = 4\nprint('same' if x is y else 'diff')", code:"x = 4\ny = 4\nprint('same' if x is y else 'diff')", options:["same","diff","True","Error"], correctIndex:0, explanation:"Small integers are cached in Python, so x is y is True.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\na = 5\nb = 10\nc = 15\nif a < b < c:\n    print('ordered')\nelse:\n    print('not')", code:"a = 5\nb = 10\nc = 15\nif a < b < c:\n    print('ordered')\nelse:\n    print('not')", options:["ordered","not","True","Error"], correctIndex:0, explanation:"Python supports chained comparisons: 5 < 10 < 15 is True.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nx = None\nif x is None:\n    print('null')\nelif x == 0:\n    print('zero')\nelse:\n    print('value')", code:"x = None\nif x is None:\n    print('null')\nelif x == 0:\n    print('zero')\nelse:\n    print('value')", options:["null","zero","value","Error"], correctIndex:0, explanation:"x is None is True, so 'null' prints.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nx = 7\nresult = 'odd' if x % 2 != 0 else 'even'\nprint(result)", code:"x = 7\nresult = 'odd' if x % 2 != 0 else 'even'\nprint(result)", options:["odd","even","7","Error"], correctIndex:0, explanation:"7 % 2 = 1 which is != 0, so result = 'odd'.", errorType:"logical"},
+      {questionText:"What does this print?\n\nval = 50\nif val > 100:\n    print('high')\nelif val > 75:\n    print('medium')\nelif val > 25:\n    print('low')\nelse:\n    print('very low')", code:"val = 50\nif val > 100:\n    print('high')\nelif val > 75:\n    print('medium')\nelif val > 25:\n    print('low')\nelse:\n    print('very low')", options:["high","medium","low","very low"], correctIndex:2, explanation:"50 is not > 100, not > 75, but is > 25 → 'low'.", errorType:"logical"},
+    ],
+  },
+  loops: {
+    easy: [
+      {questionText:"What is the output?\n\nfor i in range(3):\n    print(i)", code:"for i in range(3):\n    print(i)", options:["1 2 3","0 1 2","0 1 2 3","Error"], correctIndex:1, explanation:"range(3) gives 0, 1, 2.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\ni = 0\nwhile i < 3:\n    print(i)\n    i += 1", code:"i = 0\nwhile i < 3:\n    print(i)\n    i += 1", options:["0 1 2","1 2 3","0 1 2 3","Error"], correctIndex:0, explanation:"Prints 0, 1, 2 then stops when i=3.", errorType:"logical"},
+      {questionText:"What does range(2, 5) produce?", options:["2 3 4 5","2 3 4","1 2 3 4 5","2 4"], correctIndex:1, explanation:"range(start, stop) excludes the stop value.", errorType:"conceptual"},
+      {questionText:"How many times does this loop run?\n\nfor i in range(4):\n    print('hello')", code:"for i in range(4):\n    print('hello')", options:["3","4","5","Error"], correctIndex:1, explanation:"range(4) produces 0,1,2,3 — 4 iterations.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nfor x in [10, 20, 30]:\n    print(x)", code:"for x in [10, 20, 30]:\n    print(x)", options:["10 20 30","0 1 2","x x x","Error"], correctIndex:0, explanation:"The loop iterates over each element in the list.", errorType:"conceptual"},
+      {questionText:"Which keyword is used to skip the current loop iteration?", options:["skip","break","continue","pass"], correctIndex:2, explanation:"continue skips the rest of the current iteration and moves to the next.", errorType:"syntax"},
+      {questionText:"What does this print?\n\ncount = 0\nwhile count < 3:\n    count += 1\nprint(count)", code:"count = 0\nwhile count < 3:\n    count += 1\nprint(count)", options:["2","3","4","Error"], correctIndex:1, explanation:"Loop runs when count is 0, 1, 2. After third increment count=3, loop ends.", errorType:"logical"},
+      {questionText:"What is the output?\n\nfor i in range(1, 4):\n    print(i)", code:"for i in range(1, 4):\n    print(i)", options:["0 1 2 3","1 2 3","1 2 3 4","Error"], correctIndex:1, explanation:"range(1, 4) gives 1, 2, 3.", errorType:"conceptual"},
+    ],
+    medium: [
+      {questionText:"What is the output?\n\nfor i in range(5):\n    if i == 3:\n        continue\n    print(i, end=' ')", code:"for i in range(5):\n    if i == 3:\n        continue\n    print(i, end=' ')", options:["0 1 2 3 4","0 1 2 4","0 1 2","1 2 4"], correctIndex:1, explanation:"continue skips i=3, so output is 0 1 2 4.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\ntotal = 0\nfor n in [1, 2, 3, 4]:\n    total += n\nprint(total)", code:"total = 0\nfor n in [1, 2, 3, 4]:\n    total += n\nprint(total)", options:["4","10","[1,2,3,4]","Error"], correctIndex:1, explanation:"1+2+3+4=10.", errorType:"logical"},
+      {questionText:"What is the output?\n\ncount = 0\nwhile count < 5:\n    count += 2\nprint(count)", code:"count = 0\nwhile count < 5:\n    count += 2\nprint(count)", options:["4","5","6","2"], correctIndex:2, explanation:"0→2→4→6. At 6, 6<5 is False. Prints 6.", errorType:"logical"},
+      {questionText:"What does this print?\n\nfor i in range(5):\n    if i == 3:\n        break\n    print(i, end=' ')", code:"for i in range(5):\n    if i == 3:\n        break\n    print(i, end=' ')", options:["0 1 2","0 1 2 3","0 1 2 3 4","Error"], correctIndex:0, explanation:"break stops at i=3 before printing it.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nproduct = 1\nfor i in range(1, 5):\n    product *= i\nprint(product)", code:"product = 1\nfor i in range(1, 5):\n    product *= i\nprint(product)", options:["10","24","5","Error"], correctIndex:1, explanation:"1*1*2*3*4 = 24 (4 factorial).", errorType:"logical"},
+      {questionText:"What does this print?\n\nfor i in range(3):\n    print(i * 2, end=',')", code:"for i in range(3):\n    print(i * 2, end=',')", options:["0,2,4,","1,2,3,","0,1,2,","Error"], correctIndex:0, explanation:"0*2=0, 1*2=2, 2*2=4. Printed with commas.", errorType:"logical"},
+      {questionText:"What is the output?\n\ni = 10\nwhile i > 0:\n    i -= 3\nprint(i)", code:"i = 10\nwhile i > 0:\n    i -= 3\nprint(i)", options:["1","0","-2","Error"], correctIndex:2, explanation:"10→7→4→1→-2. At -2, -2>0 is False.", errorType:"logical"},
+      {questionText:"What does this print?\n\nfor i in range(4):\n    if i % 2 == 0:\n        print(i, end=' ')", code:"for i in range(4):\n    if i % 2 == 0:\n        print(i, end=' ')", options:["0 2","1 3","0 1 2 3","Error"], correctIndex:0, explanation:"Even values in range(4): 0 and 2.", errorType:"logical"},
+    ],
+    hard: [
+      {questionText:"What does this output?\n\nfor i in range(3):\n    for j in range(3):\n        if i == j:\n            break\n    print(j)", code:"for i in range(3):\n    for j in range(3):\n        if i == j:\n            break\n    print(j)", options:["0 1 2","2 2 2","0 1 2 3","Error"], correctIndex:0, explanation:"break exits inner loop when i==j. So j=0,1,2 when printed.", errorType:"logical"},
+      {questionText:"What is the output?\n\nresult = [x*2 for x in range(4) if x % 2 == 0]\nprint(result)", code:"result = [x*2 for x in range(4) if x % 2 == 0]\nprint(result)", options:["[0,2,4,6]","[0,4]","[2,6]","[0,2]"], correctIndex:1, explanation:"Even x in range(4): x=0,2. x*2: 0,4.", errorType:"syntax"},
+      {questionText:"What does this print?\n\nfor i in range(3):\n    pass\nprint(i)", code:"for i in range(3):\n    pass\nprint(i)", options:["0","2","3","Error"], correctIndex:1, explanation:"After the loop, i retains its last value which is 2.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nresult = 0\nfor i in range(1, 6):\n    if i % 2 == 0:\n        result += i\nprint(result)", code:"result = 0\nfor i in range(1, 6):\n    if i % 2 == 0:\n        result += i\nprint(result)", options:["6","9","15","Error"], correctIndex:0, explanation:"Even numbers in range(1,6): 2 and 4. 2+4=6.", errorType:"logical"},
+      {questionText:"What does this print?\n\nfound = False\nfor i in range(10):\n    if i == 5:\n        found = True\n        break\nprint(found, i)", code:"found = False\nfor i in range(10):\n    if i == 5:\n        found = True\n        break\nprint(found, i)", options:["True 5","False 5","True 10","Error"], correctIndex:0, explanation:"Loop breaks at i=5. found is set to True.", errorType:"logical"},
+      {questionText:"What is the output?\n\nmatrix = [[1,2],[3,4]]\nflat = [x for row in matrix for x in row]\nprint(flat)", code:"matrix = [[1,2],[3,4]]\nflat = [x for row in matrix for x in row]\nprint(flat)", options:["[[1,2],[3,4]]","[1,2,3,4]","[1,3,2,4]","Error"], correctIndex:1, explanation:"Nested list comprehension flattens the matrix.", errorType:"syntax"},
+      {questionText:"What does this print?\n\nfor i in range(5):\n    if i % 2 == 0:\n        continue\n    print(i, end=' ')", code:"for i in range(5):\n    if i % 2 == 0:\n        continue\n    print(i, end=' ')", options:["0 2 4","1 3","0 1 2 3 4","Error"], correctIndex:1, explanation:"continue skips even numbers (0, 2, 4). Only 1 and 3 print.", errorType:"logical"},
+    ],
+  },
+  functions: {
+    easy: [
+      {questionText:"What does this print?\n\ndef say_hi():\n    print('Hi!')\nsay_hi()", code:"def say_hi():\n    print('Hi!')\nsay_hi()", options:["say_hi()","'Hi!'","Hi!","Error"], correctIndex:2, explanation:"Calling say_hi() executes print('Hi!').", errorType:"conceptual"},
+      {questionText:"What does this return?\n\ndef double(n):\n    return n * 2\nprint(double(4))", code:"def double(n):\n    return n * 2\nprint(double(4))", options:["8","4","2","Error"], correctIndex:0, explanation:"4 * 2 = 8.", errorType:"logical"},
+      {questionText:"What is the output?\n\ndef add(a, b):\n    return a + b\nresult = add(3, 4)\nprint(result)", code:"def add(a, b):\n    return a + b\nresult = add(3, 4)\nprint(result)", options:["7","34","add(3,4)","Error"], correctIndex:0, explanation:"3 + 4 = 7, returned and stored.", errorType:"logical"},
+      {questionText:"What keyword is used to define a function in Python?", options:["function","func","def","define"], correctIndex:2, explanation:"Python uses def to define a function.", errorType:"syntax"},
+      {questionText:"What does this print?\n\ndef triple(x):\n    return x * 3\nprint(triple(5))", code:"def triple(x):\n    return x * 3\nprint(triple(5))", options:["3","5","15","Error"], correctIndex:2, explanation:"5 * 3 = 15.", errorType:"logical"},
+      {questionText:"What is the output of a function with no return statement?", options:["0","''","None","Error"], correctIndex:2, explanation:"A function without a return statement returns None by default.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\ndef greet(name):\n    print('Hello, ' + name)\ngreet('Ana')", code:"def greet(name):\n    print('Hello, ' + name)\ngreet('Ana')", options:["Hello, name","Hello, Ana","greet(Ana)","Error"], correctIndex:1, explanation:"'Hello, ' + 'Ana' = 'Hello, Ana'.", errorType:"logical"},
+      {questionText:"What does this print?\n\ndef square(n):\n    return n ** 2\nprint(square(6))", code:"def square(n):\n    return n ** 2\nprint(square(6))", options:["12","36","6","Error"], correctIndex:1, explanation:"6 ** 2 = 36.", errorType:"logical"},
+    ],
+    medium: [
+      {questionText:"What is the output?\n\ndef greet(name='World'):\n    return 'Hello, ' + name\nprint(greet())", code:"def greet(name='World'):\n    return 'Hello, ' + name\nprint(greet())", options:["Hello,","Hello, World","Hello, name","Error"], correctIndex:1, explanation:"name defaults to 'World' when not given.", errorType:"syntax"},
+      {questionText:"What does this print?\n\ndef f(x):\n    x = x + 10\n    return x\na = 5\nf(a)\nprint(a)", code:"def f(x):\n    x = x + 10\n    return x\na = 5\nf(a)\nprint(a)", options:["15","5","10","Error"], correctIndex:1, explanation:"a is passed by value for integers. f() doesn't change a.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\ndef power(base, exp=2):\n    return base ** exp\nprint(power(3))", code:"def power(base, exp=2):\n    return base ** exp\nprint(power(3))", options:["6","9","3","8"], correctIndex:1, explanation:"base=3, exp=2 (default). 3**2=9.", errorType:"syntax"},
+      {questionText:"What does this print?\n\ndef add(*nums):\n    return sum(nums)\nprint(add(1, 2, 3))", code:"def add(*nums):\n    return sum(nums)\nprint(add(1, 2, 3))", options:["[1,2,3]","6","3","Error"], correctIndex:1, explanation:"*nums collects all arguments. sum([1,2,3])=6.", errorType:"syntax"},
+      {questionText:"What is the output?\n\ndef f(a, b):\n    return a - b\nprint(f(b=3, a=10))", code:"def f(a, b):\n    return a - b\nprint(f(b=3, a=10))", options:["7","13","-7","Error"], correctIndex:0, explanation:"Keyword arguments: a=10, b=3. 10-3=7.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\ndef repeat(s, n=2):\n    return s * n\nprint(repeat('hi', 3))", code:"def repeat(s, n=2):\n    return s * n\nprint(repeat('hi', 3))", options:["hihihi","hihi","hi3","Error"], correctIndex:0, explanation:"'hi' repeated 3 times = 'hihihi'.", errorType:"logical"},
+      {questionText:"What is the output?\n\ndef add(a, b):\n    return a + b\nresult = add(add(1, 2), 3)\nprint(result)", code:"def add(a, b):\n    return a + b\nresult = add(add(1, 2), 3)\nprint(result)", options:["6","5","3","Error"], correctIndex:0, explanation:"add(1,2)=3, then add(3,3)=6.", errorType:"logical"},
+      {questionText:"What does this print?\n\ndef check(n):\n    if n > 0:\n        return 'pos'\n    return 'neg'\nprint(check(-5))", code:"def check(n):\n    if n > 0:\n        return 'pos'\n    return 'neg'\nprint(check(-5))", options:["pos","neg","None","Error"], correctIndex:1, explanation:"-5 is not > 0 so the first return is skipped; returns 'neg'.", errorType:"logical"},
+    ],
+    hard: [
+      {questionText:"What does this print?\n\ndef counter():\n    count = 0\n    def inc():\n        nonlocal count\n        count += 1\n        return count\n    return inc\nc = counter()\nprint(c(), c())", code:"def counter():\n    count = 0\n    def inc():\n        nonlocal count\n        count += 1\n        return count\n    return inc\nc = counter()\nprint(c(), c())", options:["1 1","1 2","0 1","Error"], correctIndex:1, explanation:"Closure retains count. First call: 1, second: 2.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\ndef f(lst=[]):\n    lst.append(1)\n    return lst\nprint(f())\nprint(f())", code:"def f(lst=[]):\n    lst.append(1)\n    return lst\nprint(f())\nprint(f())", options:["[1] [1]","[1] [1,1]","[] [1]","Error"], correctIndex:1, explanation:"Default mutable arguments persist across calls.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\ndef make_adder(n):\n    return lambda x: x + n\nadd10 = make_adder(10)\nprint(add10(5))", code:"def make_adder(n):\n    return lambda x: x + n\nadd10 = make_adder(10)\nprint(add10(5))", options:["10","5","15","Error"], correctIndex:2, explanation:"Closure captures n=10. add10(5) = 5 + 10 = 15.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\ndef f(x, y=1, *args):\n    return x + y + sum(args)\nprint(f(2, 3, 4, 5))", code:"def f(x, y=1, *args):\n    return x + y + sum(args)\nprint(f(2, 3, 4, 5))", options:["14","10","11","Error"], correctIndex:0, explanation:"x=2, y=3, args=(4,5). 2+3+9=14.", errorType:"syntax"},
+      {questionText:"What does this print?\n\ndef f(a, b, c):\n    return a * b + c\nargs = (2, 3, 4)\nprint(f(*args))", code:"def f(a, b, c):\n    return a * b + c\nargs = (2, 3, 4)\nprint(f(*args))", options:["10","9","24","Error"], correctIndex:0, explanation:"*args unpacks tuple: a=2, b=3, c=4. 2*3+4=10.", errorType:"syntax"},
+      {questionText:"What is the output?\n\ndef outer():\n    results = []\n    for i in range(3):\n        results.append(lambda: i)\n    return results\nfns = outer()\nprint(fns[0]())", code:"def outer():\n    results = []\n    for i in range(3):\n        results.append(lambda: i)\n    return results\nfns = outer()\nprint(fns[0]())", options:["0","1","2","Error"], correctIndex:2, explanation:"All lambdas capture the same i variable. After loop i=2, so all return 2.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\ndef apply(func, value):\n    return func(value)\nprint(apply(lambda x: x ** 2, 4))", code:"def apply(func, value):\n    return func(value)\nprint(apply(lambda x: x ** 2, 4))", options:["8","16","4","Error"], correctIndex:1, explanation:"lambda squares its input. 4**2=16.", errorType:"conceptual"},
+    ],
+  },
+  lists: {
+    easy: [
+      {questionText:"What is the output?\n\nfruits = ['apple', 'banana', 'cherry']\nprint(fruits[1])", code:"fruits = ['apple', 'banana', 'cherry']\nprint(fruits[1])", options:["apple","banana","cherry","Error"], correctIndex:1, explanation:"Index 1 is the second element: 'banana'.", errorType:"conceptual"},
+      {questionText:"What does len([1, 2, 3, 4]) return?", options:["3","4","5","Error"], correctIndex:1, explanation:"len() counts all elements: 4.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nnums = [10, 20, 30]\nnums.append(40)\nprint(nums)", code:"nums = [10, 20, 30]\nnums.append(40)\nprint(nums)", options:["[10,20,30]","[10,20,30,40]","[40,10,20,30]","Error"], correctIndex:1, explanation:"append() adds to the end.", errorType:"syntax"},
+      {questionText:"What does this print?\n\ncolors = ['red', 'green', 'blue']\nprint(colors[0])", code:"colors = ['red', 'green', 'blue']\nprint(colors[0])", options:["red","green","blue","Error"], correctIndex:0, explanation:"Index 0 is the first element: 'red'.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nnums = [5, 10, 15]\nprint(nums[-1])", code:"nums = [5, 10, 15]\nprint(nums[-1])", options:["5","10","15","Error"], correctIndex:2, explanation:"-1 accesses the last element: 15.", errorType:"conceptual"},
+      {questionText:"Which method removes an element from a list by value?", options:["delete()","pop()","remove()","discard()"], correctIndex:2, explanation:"remove(value) removes the first occurrence of that value.", errorType:"syntax"},
+      {questionText:"What is the output?\n\na = [1, 2, 3]\na.append(4)\nprint(len(a))", code:"a = [1, 2, 3]\na.append(4)\nprint(len(a))", options:["3","4","5","Error"], correctIndex:1, explanation:"After appending, the list has 4 elements.", errorType:"logical"},
+      {questionText:"What does this print?\n\nletters = ['a', 'b', 'c']\nprint('b' in letters)", code:"letters = ['a', 'b', 'c']\nprint('b' in letters)", options:["True","False","b","Error"], correctIndex:0, explanation:"'b' is in the list, so 'in' returns True.", errorType:"conceptual"},
+    ],
+    medium: [
+      {questionText:"What is the output?\n\ndata = [5, 3, 8, 1]\ndata.sort()\nprint(data[0])", code:"data = [5, 3, 8, 1]\ndata.sort()\nprint(data[0])", options:["5","1","8","3"], correctIndex:1, explanation:"sort() orders: [1,3,5,8]. First is 1.", errorType:"logical"},
+      {questionText:"What does this print?\n\na = [1, 2, 3]\nb = [4, 5]\nprint(a + b)", code:"a = [1, 2, 3]\nb = [4, 5]\nprint(a + b)", options:["[5,7]","[1,2,3,4,5]","Error","[1,2,3][4,5]"], correctIndex:1, explanation:"List + concatenates.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nnums = [1, 2, 3, 4, 5]\nprint(nums[1:4])", code:"nums = [1, 2, 3, 4, 5]\nprint(nums[1:4])", options:["[1,2,3]","[2,3,4]","[2,3,4,5]","[1,2,3,4]"], correctIndex:1, explanation:"Slice [1:4] gives indices 1,2,3 → [2,3,4].", errorType:"syntax"},
+      {questionText:"What does this print?\n\nnums = [3, 1, 4, 1, 5]\nprint(nums.count(1))", code:"nums = [3, 1, 4, 1, 5]\nprint(nums.count(1))", options:["1","2","4","Error"], correctIndex:1, explanation:"count() counts occurrences of 1 in the list: 2.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nmy_list = [10, 20, 30, 40]\nmy_list.pop(2)\nprint(my_list)", code:"my_list = [10, 20, 30, 40]\nmy_list.pop(2)\nprint(my_list)", options:["[10,20,40]","[10,30,40]","[10,20,30]","Error"], correctIndex:0, explanation:"pop(2) removes index 2 (which is 30).", errorType:"logical"},
+      {questionText:"What does this print?\n\nnums = [1, 2, 3]\nnums.reverse()\nprint(nums)", code:"nums = [1, 2, 3]\nnums.reverse()\nprint(nums)", options:["[3,2,1]","[1,2,3]","[2,1,3]","Error"], correctIndex:0, explanation:"reverse() reverses the list in place.", errorType:"logical"},
+      {questionText:"What is the output?\n\nwords = ['hi', 'hello', 'hey']\nwords.sort()\nprint(words[0])", code:"words = ['hi', 'hello', 'hey']\nwords.sort()\nprint(words[0])", options:["hi","hello","hey","Error"], correctIndex:1, explanation:"Alphabetically sorted: ['hello', 'hey', 'hi']. First is 'hello'.", errorType:"logical"},
+      {questionText:"What does this print?\n\na = [1, 2, 3, 4, 5]\nprint(a[::2])", code:"a = [1, 2, 3, 4, 5]\nprint(a[::2])", options:["[1,3,5]","[2,4]","[1,2,3]","Error"], correctIndex:0, explanation:"Step 2 takes every other element starting at index 0.", errorType:"syntax"},
+    ],
+    hard: [
+      {questionText:"What is the output?\n\ndata = [[1,2],[3,4]]\ndata[0].append(5)\nprint(data)", code:"data = [[1,2],[3,4]]\ndata[0].append(5)\nprint(data)", options:["[[1,2,5],[3,4]]","[[1,2],[3,4,5]]","[[1,2],[3,4]]","Error"], correctIndex:0, explanation:"data[0] is [1,2]. Appending 5 gives [1,2,5].", errorType:"logical"},
+      {questionText:"What does this print?\n\nnums = [3,1,4,1,5,9]\nprint(sorted(nums, reverse=True)[:3])", code:"nums = [3,1,4,1,5,9]\nprint(sorted(nums, reverse=True)[:3])", options:["[9,5,4]","[1,1,3]","[9,5,3]","[3,4,5]"], correctIndex:0, explanation:"sorted descending: [9,5,4,3,1,1]. First 3: [9,5,4].", errorType:"logical"},
+      {questionText:"What is the output?\n\na = [1, 2, 3]\nb = a\na.append(4)\nprint(b)", code:"a = [1, 2, 3]\nb = a\na.append(4)\nprint(b)", options:["[1,2,3]","[1,2,3,4]","Error","None"], correctIndex:1, explanation:"b references the same list as a, so b also sees the appended element.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nnums = [1, 2, 3, 4, 5]\nprint(nums[::-1])", code:"nums = [1, 2, 3, 4, 5]\nprint(nums[::-1])", options:["[5,4,3,2,1]","[1,2,3,4,5]","[1,3,5]","Error"], correctIndex:0, explanation:"Slice with step -1 reverses the list.", errorType:"syntax"},
+      {questionText:"What is the output?\n\nresult = [i**2 for i in range(5) if i % 2 != 0]\nprint(result)", code:"result = [i**2 for i in range(5) if i % 2 != 0]\nprint(result)", options:["[1,9]","[1,4,9]","[0,4,16]","Error"], correctIndex:0, explanation:"Odd numbers in range(5): 1 and 3. Squared: [1, 9].", errorType:"syntax"},
+      {questionText:"What does this print?\n\na = [1, 2, 3]\nb = a[:]\nb[0] = 99\nprint(a[0])", code:"a = [1, 2, 3]\nb = a[:]\nb[0] = 99\nprint(a[0])", options:["99","1","Error","None"], correctIndex:1, explanation:"b = a[:] creates a shallow copy. Modifying b[0] does not affect a[0].", errorType:"conceptual"},
+      {questionText:"What is the output?\n\ndata = [5, 2, 8, 1, 9]\ndata.sort(reverse=True)\nprint(data[:2])", code:"data = [5, 2, 8, 1, 9]\ndata.sort(reverse=True)\nprint(data[:2])", options:["[9,8]","[5,8]","[1,2]","Error"], correctIndex:0, explanation:"Sorted descending: [9,8,5,2,1]. First 2: [9,8].", errorType:"logical"},
+    ],
+  },
+  oop: {
+    easy: [
+      {questionText:"What keyword is used to define a class in Python?", options:["def","class","object","type"], correctIndex:1, explanation:"class is used to define a class.", errorType:"syntax"},
+      {questionText:"What does this print?\n\nclass Cat:\n    def __init__(self, name):\n        self.name = name\nc = Cat('Mimi')\nprint(c.name)", code:"class Cat:\n    def __init__(self, name):\n        self.name = name\nc = Cat('Mimi')\nprint(c.name)", options:["Cat","name","Mimi","Error"], correctIndex:2, explanation:"self.name = 'Mimi' is set. c.name returns 'Mimi'.", errorType:"conceptual"},
+      {questionText:"What is an instance?", options:["A copy of a function","A specific object created from a class","The class definition","A module import"], correctIndex:1, explanation:"An instance is a specific object created from a class.", errorType:"conceptual"},
+      {questionText:"What does __init__ do?", options:["Deletes the object","Prints the class","Initializes object attributes","Returns a copy"], correctIndex:2, explanation:"__init__ is the constructor that runs when an object is created.", errorType:"conceptual"},
+      {questionText:"What does 'self' refer to in an instance method?", options:["The class name","The current object instance","A global variable","The parent class"], correctIndex:1, explanation:"self refers to the specific object instance the method is called on.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nclass Box:\n    pass\nb = Box()\nprint(type(b).__name__)", code:"class Box:\n    pass\nb = Box()\nprint(type(b).__name__)", options:["Box","b","object","Error"], correctIndex:0, explanation:"b is an instance of Box.", errorType:"conceptual"},
+      {questionText:"How do you create an object from class Person?", options:["Person.new()","new Person()","Person()","create Person"], correctIndex:2, explanation:"Calling the class name like a function creates an instance.", errorType:"syntax"},
+      {questionText:"What is an attribute in OOP?", options:["A loop variable","A module","Data stored on an object","A built-in function"], correctIndex:2, explanation:"Attributes are variables that belong to an object.", errorType:"conceptual"},
+    ],
+    medium: [
+      {questionText:"What is the output?\n\nclass Counter:\n    count = 0\n    def increment(self):\n        Counter.count += 1\nc1 = Counter()\nc2 = Counter()\nc1.increment()\nc2.increment()\nprint(Counter.count)", code:"class Counter:\n    count = 0\n    def increment(self):\n        Counter.count += 1\nc1 = Counter()\nc2 = Counter()\nc1.increment()\nc2.increment()\nprint(Counter.count)", options:["0","1","2","Error"], correctIndex:2, explanation:"count is a class variable shared by all instances. Incremented twice → 2.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nclass Animal:\n    def speak(self):\n        return 'Some sound'\nclass Dog(Animal):\n    def speak(self):\n        return 'Woof'\nd = Dog()\nprint(d.speak())", code:"class Animal:\n    def speak(self):\n        return 'Some sound'\nclass Dog(Animal):\n    def speak(self):\n        return 'Woof'\nd = Dog()\nprint(d.speak())", options:["Some sound","Woof","Error","None"], correctIndex:1, explanation:"Dog overrides speak(). 'Woof' is returned.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nclass Person:\n    def __init__(self, age):\n        self.age = age\np = Person(20)\np.age += 1\nprint(p.age)", code:"class Person:\n    def __init__(self, age):\n        self.age = age\np = Person(20)\np.age += 1\nprint(p.age)", options:["20","21","age","Error"], correctIndex:1, explanation:"p.age starts at 20 and is incremented to 21.", errorType:"logical"},
+      {questionText:"What does this print?\n\nclass Parent:\n    def value(self):\n        return 1\nclass Child(Parent):\n    pass\nprint(Child().value())", code:"class Parent:\n    def value(self):\n        return 1\nclass Child(Parent):\n    pass\nprint(Child().value())", options:["1","0","None","Error"], correctIndex:0, explanation:"Child inherits value() from Parent.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nclass A:\n    x = 5\nprint(A.x)", code:"class A:\n    x = 5\nprint(A.x)", options:["5","x","A","Error"], correctIndex:0, explanation:"A.x accesses the class attribute x.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nclass Rectangle:\n    def __init__(self, w, h):\n        self.w = w\n        self.h = h\n    def area(self):\n        return self.w * self.h\nr = Rectangle(4, 5)\nprint(r.area())", code:"class Rectangle:\n    def __init__(self, w, h):\n        self.w = w\n        self.h = h\n    def area(self):\n        return self.w * self.h\nr = Rectangle(4, 5)\nprint(r.area())", options:["9","20","18","Error"], correctIndex:1, explanation:"4 * 5 = 20.", errorType:"logical"},
+      {questionText:"What is the output?\n\nclass Dog:\n    def __init__(self, name):\n        self.name = name\nd1 = Dog('Rex')\nd2 = Dog('Max')\nprint(d1.name, d2.name)", code:"class Dog:\n    def __init__(self, name):\n        self.name = name\nd1 = Dog('Rex')\nd2 = Dog('Max')\nprint(d1.name, d2.name)", options:["Rex Max","Max Rex","Rex Rex","Error"], correctIndex:0, explanation:"Each instance has its own name attribute.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nclass A:\n    def greet(self):\n        return 'Hi from A'\nclass B(A):\n    pass\nb = B()\nprint(b.greet())", code:"class A:\n    def greet(self):\n        return 'Hi from A'\nclass B(A):\n    pass\nb = B()\nprint(b.greet())", options:["Hi from A","Hi from B","Error","None"], correctIndex:0, explanation:"B inherits greet() from A. b.greet() returns 'Hi from A'.", errorType:"conceptual"},
+    ],
+    hard: [
+      {questionText:"What is the output?\n\nclass A:\n    def __init__(self):\n        self.x = 1\nclass B(A):\n    def __init__(self):\n        super().__init__()\n        self.y = 2\nb = B()\nprint(b.x, b.y)", code:"class A:\n    def __init__(self):\n        self.x = 1\nclass B(A):\n    def __init__(self):\n        super().__init__()\n        self.y = 2\nb = B()\nprint(b.x, b.y)", options:["1 2","2 1","Error","1 1"], correctIndex:0, explanation:"super().__init__() sets x=1. B sets y=2.", errorType:"syntax"},
+      {questionText:"What does this print?\n\nclass A:\n    def greet(self): return 'Hello from A'\nclass B(A):\n    def greet(self): return 'Hello from B'\nclass C(B): pass\nprint(C().greet())", code:"class A:\n    def greet(self): return 'Hello from A'\nclass B(A):\n    def greet(self): return 'Hello from B'\nclass C(B): pass\nprint(C().greet())", options:["Hello from A","Hello from B","Error","None"], correctIndex:1, explanation:"C inherits from B. Python's MRO checks B before A.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nclass Base:\n    kind = 'base'\nclass Sub(Base):\n    kind = 'sub'\nprint(Base.kind, Sub.kind)", code:"class Base:\n    kind = 'base'\nclass Sub(Base):\n    kind = 'sub'\nprint(Base.kind, Sub.kind)", options:["base sub","sub sub","base base","Error"], correctIndex:0, explanation:"Sub overrides kind, while Base.kind remains base.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nclass A:\n    def show(self):\n        return 'A'\nclass B(A):\n    def show(self):\n        return super().show() + 'B'\nprint(B().show())", code:"class A:\n    def show(self):\n        return 'A'\nclass B(A):\n    def show(self):\n        return super().show() + 'B'\nprint(B().show())", options:["A","B","AB","Error"], correctIndex:2, explanation:"super().show() returns 'A', then 'B' is added.", errorType:"syntax"},
+      {questionText:"What is the output?\n\nclass Animal:\n    def __init__(self, name):\n        self.name = name\n    def __str__(self):\n        return f'Animal: {self.name}'\na = Animal('Lion')\nprint(str(a))", code:"class Animal:\n    def __init__(self, name):\n        self.name = name\n    def __str__(self):\n        return f'Animal: {self.name}'\na = Animal('Lion')\nprint(str(a))", options:["Animal: Lion","Lion","Animal","Error"], correctIndex:0, explanation:"__str__ is called by str() and print(). Returns 'Animal: Lion'.", errorType:"conceptual"},
+      {questionText:"What does this print?\n\nclass Shape:\n    def area(self): return 0\nclass Square(Shape):\n    def __init__(self, s): self.s = s\n    def area(self): return self.s ** 2\nshapes = [Shape(), Square(4)]\nprint([s.area() for s in shapes])", code:"class Shape:\n    def area(self): return 0\nclass Square(Shape):\n    def __init__(self, s): self.s = s\n    def area(self): return self.s ** 2\nshapes = [Shape(), Square(4)]\nprint([s.area() for s in shapes])", options:["[0,16]","[0,0]","[16,16]","Error"], correctIndex:0, explanation:"Polymorphism: Shape.area()=0, Square.area()=16.", errorType:"conceptual"},
+      {questionText:"What is the output?\n\nclass Num:\n    def __init__(self, v): self.v = v\n    def __add__(self, other): return Num(self.v + other.v)\na = Num(3)\nb = Num(4)\nprint((a + b).v)", code:"class Num:\n    def __init__(self, v): self.v = v\n    def __add__(self, other): return Num(self.v + other.v)\na = Num(3)\nb = Num(4)\nprint((a + b).v)", options:["3","4","7","Error"], correctIndex:2, explanation:"__add__ defines + for Num objects. 3+4=7.", errorType:"conceptual"},
+    ],
+  },
+};
+
+const TEST_QUESTIONS_PER_SKILL = 5;
+
+function buildBalancedTestQuestions(baseQuestions, perSkill=TEST_QUESTIONS_PER_SKILL) {
+  const balanced = [];
+  SKILLS.forEach(skill => {
+    const picked = [];
+    const addUnique = (q, fallbackDifficulty=null) => {
+      if (!q || picked.length >= perSkill) return;
+      const candidate = {
+        ...q,
+        skill: q.skill || skill.id,
+        difficulty: q.difficulty || fallbackDifficulty || "medium",
+        type: q.type || "mcq",
+      };
+      if (!picked.some(existing => isSimilar(candidate, existing))) picked.push(candidate);
+    };
+
+    baseQuestions.filter(q => q.skill === skill.id).forEach(addUnique);
+    ["easy","medium","hard"].forEach(difficulty => {
+      (QUESTION_BANK[skill.id]?.[difficulty] || []).forEach(q => addUnique(q, difficulty));
+    });
+    balanced.push(...picked.slice(0, perSkill));
+  });
+  return balanced;
+}
+
+function getFallbackQuestion(skillId, difficulty, askedQuestions=[]) {
+  const skillBank = QUESTION_BANK[skillId] || {};
+  const allQuestions = [...(skillBank.easy||[]), ...(skillBank.medium||[]), ...(skillBank.hard||[])];
+  const sameDifficulty = (skillBank[difficulty] || []);
+  const pools = [sameDifficulty, allQuestions];
+  for (const pool of pools) {
+    const available = pool.filter(q => !askedQuestions.some(aq => isSimilar(q, aq)));
+    if (available.length) {
+      const q = available[Math.floor(Math.random() * available.length)];
+      return {...q, type:"mcq", skill:skillId, difficulty:q.difficulty || difficulty};
+    }
+  }
+  return null;
+}
+
+const BALANCED_PRE_TEST_QUESTIONS = buildBalancedTestQuestions(PRE_TEST_QUESTIONS);
+const BALANCED_POST_TEST_QUESTIONS = buildBalancedTestQuestions(POST_TEST_QUESTIONS);
+
+async function callGroq(messages, system, maxTokens=300) {
+  const res = await fetch("https://soft-surf-4802.itiwizeinab.workers.dev",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ model:GROQ_MODEL, max_tokens:maxTokens, temperature:0.3,
+      messages:[{role:"system",content:system},...messages] }),
+  });
+  if(!res.ok) throw new Error(await res.text());
+  return (await res.json()).choices[0].message.content;
+}
+
+async function getStaticFeedback(question, selectedIdx) {
+  const system = `You are a Python tutor giving brief, factual feedback. State the correct answer and why in 1-2 plain sentences. No markdown.`;
+  try {
+    return await callGroq([{role:"user",content:`Question: ${question.questionText}\nStudent chose: "${question.options[selectedIdx]}"\nCorrect answer: "${question.options[question.correctIndex]}"\nExplanation: ${question.explanation}`}], system, 150);
+  } catch(e) {
+    return `The correct answer is "${question.options[question.correctIndex]}". ${question.explanation}`;
+  }
+}
+
+// ─── Session persistence ──────────────────────────────────────────────────────
+function saveSession(email, data) {
+  try { localStorage.setItem(`trad_session_${email}`, JSON.stringify({...data, savedAt:new Date().toISOString()})); } catch(e) {}
+}
+function loadSession(email) {
+  try { const d = localStorage.getItem(`trad_session_${email}`); return d?JSON.parse(d):null; } catch(e) { return null; }
+}
+function clearSession(email) {
+  try { localStorage.removeItem(`trad_session_${email}`); } catch(e) {}
+}
+
+// ─── UI Helpers ───────────────────────────────────────────────────────────────
+function ProgressBar({value, color, height=6}) {
+  return <div style={{background:"#1e293b",borderRadius:height,height,overflow:"hidden"}}>
+    <div style={{width:`${Math.min(Math.max(value,0),100)}%`,height:"100%",background:color,borderRadius:height,transition:"width 0.5s ease"}}/>
+  </div>;
+}
+
+function CodeBlock({code}) {
+  if(!code) return null;
+  return <pre style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:8,padding:"12px 14px",fontFamily:font,fontSize:12,color:"#e2e8f0",overflowX:"auto",margin:"12px 0",lineHeight:1.7}}>{code}</pre>;
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  const [screen, setScreen] = useState("register");
+
+  // Registration
+  const [regEmail,setRegEmail] = useState("");
+  const [regName,setRegName]   = useState("");
+  const [regId,setRegId]       = useState("");
+  const [regGender,setRegGender] = useState("");
+  const [regMajor,setRegMajor] = useState("");
+  const [regYear,setRegYear]   = useState("");
+  const [regPrior,setRegPrior] = useState("");
+  const [regHours,setRegHours] = useState("");
+  const [registerError,setRegisterError] = useState("");
+  const [resumeData,setResumeData] = useState(null);
+
+  // Participant info
+  const [participantName,setParticipantName] = useState("");
+  const [participantEmail,setParticipantEmail] = useState("");
+  const [participantId,setParticipantId] = useState("");
+
+  // Consent
+  const [consentGiven,setConsentGiven] = useState(false);
+  const [consentTimestamp,setConsentTimestamp] = useState(null);
+
+  // Test state
+  const [testIdx,setTestIdx]   = useState(0);
+  const [testSelected,setTestSelected] = useState(null);
+  const [testShowFeedback,setTestShowFeedback] = useState(false);
+  const [testAnswers,setTestAnswers] = useState([]);
+  const [aiFeedback,setAiFeedback] = useState(null);
+  const [aiLoading,setAiLoading] = useState(false);
+
+  // Training state
+  const [currentSkillIndex,setCurrentSkillIndex] = useState(0);
+  const [currentQuestionIndex,setCurrentQuestionIndex] = useState(0);
+  const [trainSelected,setTrainSelected] = useState(null);
+  const [trainShowFeedback,setTrainShowFeedback] = useState(false);
+  const [trainAnswers,setTrainAnswers] = useState([]);
+  const [trainAiFeedback,setTrainAiFeedback] = useState(null);
+  const [trainAiLoading,setTrainAiLoading] = useState(false);
+  const [sessionLog,setSessionLog] = useState([]);
+
+  // Results
+  const [preBkt,setPreBkt]   = useState(null);
+  const [postBkt,setPostBkt] = useState(null);
+  const [preTestAnswers,setPreTestAnswers] = useState([]);
+  const [postTestAnswers,setPostTestAnswers] = useState([]);
+
+  // Timing
+  const [sessionStartTime,setSessionStartTime] = useState(null);
+  const [sessionEndTime,setSessionEndTime] = useState(null);
+  const [phaseTimestamps,setPhaseTimestamps] = useState({});
+  const [questionStartTime,setQuestionStartTime] = useState(null);
+  const [responseTimes,setResponseTimes] = useState([]);
+
+  // UX survey
+  const [uxResponses,setUxResponses] = useState({
+    ease_of_use:null,question_quality:null,feedback_helpfulness:null,
+    overall_satisfaction:null,would_recommend:null,open_feedback:""
+  });
+
+  const currentTestQuestions = screen==="pretest" ? BALANCED_PRE_TEST_QUESTIONS : BALANCED_POST_TEST_QUESTIONS;
+  const currentSkillId = SKILLS[currentSkillIndex]?.id;
+  const currentSkillQuestions = currentSkillId ? TRADITIONAL_TRAINING[currentSkillId] : [];
+  const currentQuestion = currentSkillQuestions[currentQuestionIndex];
+  const totalTrainingQuestions = SKILLS.reduce((acc,s)=>acc+TRADITIONAL_TRAINING[s.id].length,0);
+  const answeredTrainingQuestions = trainAnswers.length;
+
+  function checkEmailForResume(email) {
+    if(!email||!email.includes("@")) return;
+    const d = loadSession(email.trim().toLowerCase());
+    if(d && d.participantName) setResumeData(d);
+    else setResumeData(null);
+  }
+
+  function restoreSession(data) {
+    setParticipantName(data.participantName||"");
+    setParticipantEmail(data.participantEmail||"");
+    setParticipantId(data.participantId||"");
+    setConsentGiven(true);
+    setConsentTimestamp(data.consentTimestamp||null);
+    setSessionStartTime(data.sessionStartTime||null);
+    setPhaseTimestamps(data.phaseTimestamps||{});
+    if(data.screen==="pretest"||data.screen==="posttest"||data.screen==="training"||data.screen==="welcome"||data.screen==="session-results") {
+      setPreTestAnswers(data.preTestAnswers||[]);
+      setPostTestAnswers(data.postTestAnswers||[]);
+      setTrainAnswers(data.trainAnswers||[]);
+      setTestIdx(data.testIdx||0);
+      setCurrentSkillIndex(data.currentSkillIndex||0);
+      setCurrentQuestionIndex(data.currentQuestionIndex||0);
+      if(data.preBkt) setPreBkt(data.preBkt);
+      setResponseTimes(data.responseTimes||[]);
+      setScreen(data.screen||"welcome");
+    } else { setScreen("welcome"); }
+    setResumeData(null);
+  }
+
+  useEffect(()=>{
+    if(!participantEmail) return;
+    saveSession(participantEmail, {
+      participantName,participantEmail,participantId,
+      consentGiven,consentTimestamp,sessionStartTime,phaseTimestamps,
+      screen,testIdx,currentSkillIndex,currentQuestionIndex,
+      preTestAnswers,postTestAnswers,trainAnswers,preBkt,responseTimes,
+    });
+  },[screen,testIdx,currentSkillIndex,currentQuestionIndex,trainAnswers,preBkt,postBkt]);
+
+  function handleRegister() {
+    if(!regEmail.trim()||!regName.trim()||!regId.trim()||!regGender||!regYear||!regMajor.trim()||!regPrior) {
+      setRegisterError("Please fill in all required fields."); return;
+    }
+    if(!regEmail.includes("@")) { setRegisterError("Please enter a valid email address."); return; }
+    const email = regEmail.trim().toLowerCase();
+    setParticipantName(regName.trim());
+    setParticipantEmail(email);
+    setParticipantId(regId.trim());
+    sbUpsert("participants", {
+      email, name:regName.trim(), university_id:regId.trim(),
+      gender:regGender, major:regMajor.trim(),
+      academic_year:regYear, prior_python:regPrior,
+      hours_per_week:regHours, group_type:"traditional",
+      registered_at:new Date().toISOString(),
+    });
+    setRegisterError(""); setScreen("consent");
+  }
+
+  function startSession() {
+    const now = Date.now();
+    setSessionStartTime(now);
+    setPhaseTimestamps(p=>({...p,pretest_start:now}));
+    setScreen("pretest");
+    setTestIdx(0);
+    setTestAnswers([]);
+    setQuestionStartTime(now);
+  }
+
+  function handleTestAnswer(idx) {
+    if(testShowFeedback) return;
+    setTestSelected(idx);
+    setTestShowFeedback(true);
+    const q = currentTestQuestions[testIdx];
+    const correct = Number(idx)===Number(q.correctIndex);
+    const rt = questionStartTime ? Date.now()-questionStartTime : 0;
+    setResponseTimes(p=>[...p,{skill:q.skill,difficulty:q.difficulty,timeMs:rt,correct,errorType:q.errorType,phase:screen}]);
+    const entry = {...q, selected:idx, correct, responseTimeMs:rt, phase:screen};
+    if(screen==="pretest") setPreTestAnswers(p=>[...p,entry]);
+    else setPostTestAnswers(p=>[...p,entry]);
+    setTestAnswers(p=>[...p,entry]);
+    sbInsert(screen==="pretest"?"pretest_answers":"posttest_answers",{
+      participant_email:participantEmail, skill:q.skill, difficulty:q.difficulty,
+      error_type:q.errorType, selected_index:idx, correct_index:q.correctIndex,
+      is_correct:correct, response_time_ms:rt, answered_at:new Date().toISOString(),
+      group_type:"traditional",
+    });
+  }
+
+  function nextTestQuestion() {
+    const isLast = testIdx >= currentTestQuestions.length - 1;
+    if(isLast) {
+      const now = Date.now();
+      if(screen==="pretest") {
+        const scores = {};
+        SKILLS.forEach(s=>{
+          const qs = preTestAnswers.filter(a=>a.skill===s.id);
+          scores[s.id] = qs.length>0?qs.filter(a=>a.correct).length/qs.length:0.3;
+        });
+        setPreBkt(scores);
+        setPhaseTimestamps(p=>({...p,pretest_end:now,training_start:now}));
+        setCurrentSkillIndex(0); setCurrentQuestionIndex(0); setTrainAnswers([]);
+        setScreen("training"); setSessionLog([]);
+      } else {
+        const scores = {};
+        SKILLS.forEach(s=>{
+          const qs = postTestAnswers.filter(a=>a.skill===s.id);
+          scores[s.id] = qs.length>0?qs.filter(a=>a.correct).length/qs.length:0;
+        });
+        setPostBkt(scores);
+        setPhaseTimestamps(p=>({...p,posttest_end:now}));
+        setSessionEndTime(now);
+        setScreen("results");
+        saveResults(scores);
+      }
+    } else {
+      setTestIdx(i=>i+1);
+      setTestSelected(null);
+      setTestShowFeedback(false);
+      setAiFeedback(null);
+      setQuestionStartTime(Date.now());
+    }
+  }
+
+  function saveResults(postScores) {
+    const preAnswersAll = preTestAnswers;
+    const postAnswersAll = postTestAnswers;
+    const preScore = preAnswersAll.length>0?preAnswersAll.filter(a=>a.correct).length/preAnswersAll.length:0;
+    const postScore = postAnswersAll.length>0?postAnswersAll.filter(a=>a.correct).length/postAnswersAll.length:0;
+    const improvement = Math.round((postScore-preScore)*100);
+    const hakeGain = preScore<1?Math.round(((postScore-preScore)/(1-preScore))*100):100;
+    sbInsert("session_results",{
+      participant_email:participantEmail,
+      group_type:"traditional",
+      pre_score:preScore, post_score:postScore,
+      improvement_pct:improvement, hake_gain:hakeGain,
+      total_questions:trainAnswers.length,
+      correct_answers:trainAnswers.filter(a=>a.correct).length,
+      session_duration_ms:sessionEndTime?sessionEndTime-sessionStartTime:0,
+      completed_at:new Date().toISOString(),
+    });
+  }
+
+  async function handleTrainAnswer(idx) {
+    if(trainShowFeedback) return;
+    setTrainSelected(idx);
+    setTrainShowFeedback(true);
+    const q = currentQuestion;
+    const correct = Number(idx)===Number(q.correctIndex);
+    const rt = questionStartTime ? Date.now()-questionStartTime : 0;
+    const entry = {...q, selected:idx, correct, responseTimeMs:rt, skillId:currentSkillId};
+    setTrainAnswers(p=>[...p,entry]);
+    const logEntry = correct ? `✅ ${currentSkillId}` : `❌ ${currentSkillId}`;
+    setSessionLog(l=>[logEntry,...l]);
+    setResponseTimes(p=>[...p,{skill:currentSkillId,difficulty:q.difficulty,timeMs:rt,correct,errorType:q.errorType,phase:"training"}]);
+    sbInsert("training_answers",{
+      participant_email:participantEmail, skill:currentSkillId,
+      difficulty:q.difficulty, error_type:q.errorType,
+      selected_index:idx, correct_index:q.correctIndex,
+      is_correct:correct, response_time_ms:rt,
+      answered_at:new Date().toISOString(),
+      group_type:"traditional",
+      is_spaced_repeat:false, is_ai_generated:false,
+      is_remediation:false, difficulty_source:"fixed",
+    });
+    if(!correct) {
+      setTrainAiLoading(true);
+      try { const fb = await getStaticFeedback(q, idx); setTrainAiFeedback(fb); }
+      catch(e) { setTrainAiFeedback(`The correct answer is "${q.options[q.correctIndex]}". ${q.explanation}`); }
+      setTrainAiLoading(false);
+    }
+  }
+
+  function nextTrainQuestion() {
+    const isLastQuestion = currentQuestionIndex >= currentSkillQuestions.length - 1;
+    const isLastSkill = currentSkillIndex >= SKILLS.length - 1;
+    if(isLastQuestion && isLastSkill) {
+      const now = Date.now();
+      setPhaseTimestamps(p=>({...p,training_end:now,posttest_start:now}));
+      setTestIdx(0); setTestAnswers([]); setTestSelected(null);
+      setTestShowFeedback(false); setAiFeedback(null);
+      setScreen("posttest"); setQuestionStartTime(Date.now());
+    } else if(isLastQuestion) {
+      setCurrentSkillIndex(i=>i+1);
+      setCurrentQuestionIndex(0);
+    } else {
+      setCurrentQuestionIndex(i=>i+1);
+    }
+    setTrainSelected(null); setTrainShowFeedback(false);
+    setTrainAiFeedback(null); setQuestionStartTime(Date.now());
+  }
+
+  // ─── SCREENS ────────────────────────────────────────────────────────────────
+  const lbl = {display:"block",color:C.textD,fontSize:11,fontFamily:font,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.07em",fontWeight:600};
+  const inp = {width:"100%",background:"#0d1424",border:"1px solid #1e293b",borderRadius:9,padding:"10px 13px",color:C.text,fontSize:13,fontFamily:sans,outline:"none",boxSizing:"border-box"};
+  const sel = {...inp,cursor:"pointer",appearance:"none",backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center",paddingRight:32};
+  const focusStyle = (e)=>{ e.target.style.borderColor=C.accent; e.target.style.boxShadow=`0 0 0 3px ${C.accent}22`; };
+  const blurStyle  = (e)=>{ e.target.style.borderColor="#1e293b"; e.target.style.boxShadow="none"; };
+
+  // ─── REGISTER ───────────────────────────────────────────────────────────────
+  if(screen==="register") return (
+    <div style={{minHeight:"100vh",background:"#070b14",display:"flex",fontFamily:sans,overflow:"hidden",position:"relative"}}>
+      <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,pointerEvents:"none",zIndex:0}}>
+        <div style={{position:"absolute",top:"-20%",left:"-10%",width:600,height:600,borderRadius:"50%",background:"radial-gradient(circle, #f59e0b22 0%, transparent 70%)"}}/>
+        <div style={{position:"absolute",bottom:"-10%",right:"-5%",width:400,height:400,borderRadius:"50%",background:"radial-gradient(circle, #fbbf2411 0%, transparent 70%)"}}/>
+      </div>
+      <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:"32px 24px",overflowY:"auto",position:"relative",zIndex:1}}>
+        <div style={{width:"100%",maxWidth:460}}>
+          <div style={{textAlign:"center",marginBottom:28}}>
+            <div style={{display:"inline-flex",alignItems:"center",gap:8,background:"#111827",border:"1px solid #1e293b",borderRadius:100,padding:"6px 16px",marginBottom:20}}>
+              <span style={{fontSize:16}}>🐍</span>
+              <span style={{color:C.text,fontSize:13,fontWeight:700,fontFamily:font}}>Python<span style={{color:C.accent}}>Mastery</span></span>
+              <span style={{background:`${C.accent}22`,color:C.accentL,fontSize:9,fontFamily:font,padding:"2px 7px",borderRadius:4,fontWeight:700}}>TRADITIONAL</span>
+            </div>
+            <h1 style={{color:C.text,fontSize:22,fontWeight:800,fontFamily:font,margin:"0 0 6px"}}>Participant Registration</h1>
+            <p style={{color:C.textM,fontSize:12,margin:0}}>Traditional AI Group — Complete all fields to begin</p>
+          </div>
+
+          {/* Email */}
+          <div style={{background:"#111827",border:"1px solid #1e293b",borderRadius:14,padding:20,marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+              <div style={{width:22,height:22,borderRadius:"50%",background:C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:"#fff",fontWeight:800,fontFamily:font,flexShrink:0}}>1</div>
+              <span style={{color:C.textD,fontSize:11,fontFamily:font,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em"}}>Account Email</span>
+            </div>
+            <label style={lbl}>Email Address <span style={{color:C.error}}>*</span></label>
+            <input value={regEmail}
+              onChange={e=>{setRegEmail(e.target.value);setResumeData(null);setRegisterError("");}}
+              onBlur={e=>{blurStyle(e);checkEmailForResume(e.target.value);}}
+              onFocus={focusStyle} placeholder="your.email@university.edu" style={inp}/>
+            {resumeData && (
+              <div style={{marginTop:14,background:"#1a1208",border:"1px solid #f59e0b44",borderRadius:10,padding:14}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <span style={{fontSize:18}}>👋</span>
+                  <div>
+                    <div style={{color:C.accent,fontWeight:700,fontSize:13,fontFamily:font}}>Welcome back, {resumeData.participantName}!</div>
+                    <div style={{color:C.textM,fontSize:11,marginTop:1}}>Session saved {resumeData.savedAt?new Date(resumeData.savedAt).toLocaleString():""}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>restoreSession(resumeData)}
+                    style={{flex:1,background:`linear-gradient(135deg,${C.accent},${C.accentD})`,color:"#fff",border:"none",borderRadius:8,padding:"10px",fontSize:12,fontFamily:font,fontWeight:700,cursor:"pointer"}}>
+                    ▶ Resume Session
+                  </button>
+                  <button onClick={()=>{clearSession(regEmail.trim().toLowerCase());setResumeData(null);}}
+                    style={{background:"transparent",color:C.textM,border:"1px solid #1e293b",borderRadius:8,padding:"10px 12px",fontSize:11,fontFamily:font,cursor:"pointer",whiteSpace:"nowrap"}}>
+                    New Start
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {!resumeData && (<>
+          {/* Personal info */}
+          <div style={{background:"#111827",border:"1px solid #1e293b",borderRadius:14,padding:20,marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+              <div style={{width:22,height:22,borderRadius:"50%",background:"#1e293b",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:C.textD,fontWeight:800,fontFamily:font,flexShrink:0}}>2</div>
+              <span style={{color:C.textD,fontSize:11,fontFamily:font,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em"}}>Personal Information</span>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <div><label style={lbl}>Full Name <span style={{color:C.error}}>*</span></label>
+                <input value={regName} onChange={e=>setRegName(e.target.value)} onFocus={focusStyle} onBlur={blurStyle} placeholder="First Last" style={inp}/></div>
+              <div><label style={lbl}>University ID <span style={{color:C.error}}>*</span></label>
+                <input value={regId} onChange={e=>setRegId(e.target.value)} onFocus={focusStyle} onBlur={blurStyle} placeholder="e.g. 20230001" style={inp}/></div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div><label style={lbl}>Gender <span style={{color:C.error}}>*</span></label>
+                <select value={regGender} onChange={e=>setRegGender(e.target.value)} onFocus={focusStyle} onBlur={blurStyle} style={sel}>
+                  <option value="">Select...</option><option value="male">Male</option><option value="female">Female</option>
+                </select></div>
+              <div><label style={lbl}>Academic Year <span style={{color:C.error}}>*</span></label>
+                <select value={regYear} onChange={e=>setRegYear(e.target.value)} onFocus={focusStyle} onBlur={blurStyle} style={sel}>
+                  <option value="">Select...</option><option value="1">1st Year</option><option value="2">2nd Year</option><option value="3">3rd Year</option><option value="4">4th Year</option><option value="5+">5th Year+</option>
+                </select></div>
+            </div>
+          </div>
+
+          {/* Academic background */}
+          <div style={{background:"#111827",border:"1px solid #1e293b",borderRadius:14,padding:20,marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+              <div style={{width:22,height:22,borderRadius:"50%",background:"#1e293b",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:C.textD,fontWeight:800,fontFamily:font,flexShrink:0}}>3</div>
+              <span style={{color:C.textD,fontSize:11,fontFamily:font,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em"}}>Academic Background</span>
+            </div>
+            <div style={{marginBottom:10}}>
+              <label style={lbl}>Major / Department <span style={{color:C.error}}>*</span></label>
+              <input value={regMajor} onChange={e=>setRegMajor(e.target.value)} onFocus={focusStyle} onBlur={blurStyle} placeholder="e.g. Computer Science, Software Engineering..." style={inp}/>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div><label style={lbl}>Python Experience <span style={{color:C.error}}>*</span></label>
+                <select value={regPrior} onChange={e=>setRegPrior(e.target.value)} onFocus={focusStyle} onBlur={blurStyle} style={sel}>
+                  <option value="">Select...</option><option value="none">No experience</option><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option>
+                </select></div>
+              <div><label style={lbl}>Coding hrs / Week</label>
+                <select value={regHours} onChange={e=>setRegHours(e.target.value)} onFocus={focusStyle} onBlur={blurStyle} style={sel}>
+                  <option value="">Select...</option><option value="0">0 hours</option><option value="1-3">1–3 hours</option><option value="4-7">4–7 hours</option><option value="8+">8+ hours</option>
+                </select></div>
+            </div>
+          </div>
+
+          {registerError && <div style={{background:"#1f0a0a",border:"1px solid #7f1d1d55",borderRadius:9,padding:"10px 14px",marginBottom:12,color:C.error,fontSize:12,fontFamily:font}}>⚠️ {registerError}</div>}
+
+          <button onClick={handleRegister}
+            style={{width:"100%",background:`linear-gradient(135deg,${C.accent} 0%,${C.accentD} 100%)`,color:"#fff",border:"none",borderRadius:11,padding:"14px",fontSize:15,fontFamily:font,fontWeight:800,cursor:"pointer",boxShadow:`0 4px 20px ${C.accent}33`}}>
+            Begin Session →
+          </button>
+          <p style={{color:C.textM,fontSize:10,textAlign:"center",marginTop:12,lineHeight:1.7}}>
+            🔒 Your data is used for research purposes only.
+          </p>
+          </>)}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ─── CONSENT ────────────────────────────────────────────────────────────────
+  if(screen==="consent") return (
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:sans,padding:20}}>
+      <div style={{maxWidth:600,width:"100%"}}>
+        <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:16,padding:32}}>
+          <div style={{textAlign:"center",marginBottom:24}}>
+            <div style={{fontSize:40,marginBottom:10}}>📋</div>
+            <h2 style={{color:C.text,fontFamily:font,fontSize:20,margin:0}}>Research Consent</h2>
+            <p style={{color:C.textD,fontSize:12,marginTop:6}}>Traditional AI Group — Please read before proceeding</p>
+          </div>
+          <div style={{background:C.bg,borderRadius:12,padding:20,marginBottom:20,fontSize:12,color:C.textD,lineHeight:1.9}}>
+            <p style={{marginBottom:12}}>You are invited to participate in a research study comparing <strong style={{color:C.text}}>Traditional AI Learning</strong> with Adaptive AI Learning for Python programming education.</p>
+            <p style={{marginBottom:12}}>In this session you will:</p>
+            <ul style={{paddingLeft:20,marginBottom:12}}>
+              <li style={{marginBottom:6}}>Complete a <strong style={{color:C.text}}>Pre-Test</strong> (30 questions) covering 6 Python skills</li>
+              <li style={{marginBottom:6}}>Work through <strong style={{color:C.text}}>Training</strong> (30 questions, fixed sequence, same for all participants)</li>
+              <li style={{marginBottom:6}}>Complete a <strong style={{color:C.text}}>Post-Test</strong> (30 questions) to measure improvement</li>
+            </ul>
+            <p style={{marginBottom:0}}>Your responses, timing data, and score improvements will be recorded anonymously for research analysis. Participation is voluntary.</p>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:12,background:`${C.accent}11`,border:`1px solid ${C.accent}33`,borderRadius:10,padding:14,marginBottom:20,cursor:"pointer"}} onClick={()=>setConsentGiven(c=>!c)}>
+            <div style={{width:20,height:20,borderRadius:4,border:`2px solid ${consentGiven?C.accent:C.border}`,background:consentGiven?C.accent:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.2s"}}>
+              {consentGiven&&<span style={{color:"#fff",fontSize:12,fontWeight:800}}>✓</span>}
+            </div>
+            <span style={{fontSize:12,color:C.text}}>I understand and agree to participate in this research study.</span>
+          </div>
+          <button onClick={()=>{if(!consentGiven)return;const ts=new Date().toISOString();setConsentTimestamp(ts);sbInsert("consent_log",{participant_email:participantEmail,consent_given:true,consented_at:ts,group_type:"traditional"});setScreen("welcome");}}
+            disabled={!consentGiven}
+            style={{width:"100%",background:consentGiven?`linear-gradient(135deg,${C.accent},${C.accentD})`:"#1e293b",color:consentGiven?"#fff":C.textM,border:"none",borderRadius:10,padding:"14px",fontSize:14,fontFamily:font,fontWeight:700,cursor:consentGiven?"pointer":"not-allowed",transition:"all 0.2s"}}>
+            I Agree — Continue →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ─── WELCOME ────────────────────────────────────────────────────────────────
+  if(screen==="welcome") return (
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:sans,padding:20}}>
+      <div style={{maxWidth:680,width:"100%",textAlign:"center"}}>
+        <div style={{fontSize:64,marginBottom:16}}>🐍</div>
+        <h1 style={{color:C.text,fontSize:34,fontWeight:800,fontFamily:font,margin:0}}>Python<span style={{color:C.accent}}>Mastery</span></h1>
+        <p style={{color:C.textD,fontSize:15,lineHeight:1.7,margin:"12px 0 4px"}}>Traditional AI Learning — Standard Question Sequence</p>
+        <div style={{display:"inline-flex",gap:10,alignItems:"center",background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 16px",margin:"8px 0 20px",fontSize:12,fontFamily:font}}>
+          <span style={{color:C.textM}}>👤</span>
+          <span style={{color:C.textD}}>{participantName}</span>
+          <span style={{color:C.textM}}>|</span>
+          <span style={{color:C.accent,fontWeight:700}}>📋 Traditional Group</span>
+        </div>
+        <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginBottom:24}}>
+          {SKILLS.map(s=><div key={s.id} style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 12px",fontSize:11,color:C.textD,fontFamily:font}}>{s.icon} {s.label}</div>)}
+        </div>
+        <div style={{display:"flex",gap:14,justifyContent:"center",marginBottom:28,flexWrap:"wrap"}}>
+          {[{icon:"📝",label:"Pre-Test",desc:"30 questions"},{icon:"📋",label:"Training",desc:"30 fixed questions"},{icon:"📊",label:"Post-Test",desc:"30 questions"}].map((st,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{background:C.bgCard,border:`1px solid ${C.accent}33`,borderRadius:10,padding:"10px 14px",fontSize:12,color:C.text,fontFamily:font}}>
+                {st.icon} {st.label}<div style={{fontSize:10,color:C.textM,marginTop:2}}>{st.desc}</div>
+              </div>
+              {i<2&&<span style={{color:C.textM,fontSize:16}}>→</span>}
+            </div>
+          ))}
+        </div>
+        <div style={{background:`${C.warning}11`,border:`1px solid ${C.warning}33`,borderRadius:12,padding:16,marginBottom:24,maxWidth:480,margin:"0 auto 24px"}}>
+          <div style={{fontSize:11,color:C.warning,fontFamily:font,fontWeight:700,marginBottom:6}}>ℹ️ Traditional Group</div>
+          <p style={{fontSize:12,color:C.textD,margin:0,lineHeight:1.7}}>You will receive a standard, fixed sequence of questions — the same for all participants in this group. Feedback will be provided after each incorrect answer.</p>
+        </div>
+        <button onClick={startSession}
+          style={{background:`linear-gradient(135deg,${C.accent},${C.accentD})`,color:"#fff",border:"none",borderRadius:12,padding:"16px 48px",fontSize:16,fontFamily:font,fontWeight:700,cursor:"pointer",boxShadow:`0 4px 24px ${C.accent}44`,marginTop:8}}>
+          Start Pre-Test →
+        </button>
+      </div>
+    </div>
+  );
+
+  // ─── PRE/POST TEST ───────────────────────────────────────────────────────────
+  if(screen==="pretest"||screen==="posttest") {
+    const q = currentTestQuestions[testIdx];
+    const isPost = screen==="posttest";
+    const correct = testSelected!==null&&Number(testSelected)===Number(q.correctIndex);
+    const progress = Math.round((testIdx/currentTestQuestions.length)*100);
+    return (
+      <div style={{minHeight:"100vh",background:C.bg,fontFamily:sans,padding:24}}>
+        <div style={{maxWidth:680,margin:"0 auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <span style={{background:isPost?`${C.success}22`:`${C.accent}22`,color:isPost?C.success:C.accentL,padding:"4px 12px",borderRadius:6,fontSize:11,fontFamily:font,fontWeight:700}}>
+              {isPost?"📊 Post-Test":"📝 Pre-Test"}
+            </span>
+            <span style={{fontSize:12,color:C.textD,fontFamily:font}}>Question {testIdx+1} / {currentTestQuestions.length}</span>
+          </div>
+          <ProgressBar value={progress} color={isPost?C.success:C.accent} height={6}/>
+          <div style={{marginTop:6,marginBottom:20,display:"flex",gap:8,justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:10,color:C.textM,fontFamily:font}}>Skill: {q.skill} ({q.difficulty})</span>
+            <span style={{fontSize:10,color:C.textM,fontFamily:font}}>{progress}% complete</span>
+          </div>
+
+          <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:24,marginBottom:16,animation:"fadeIn 0.3s"}}>
+            <pre style={{color:C.text,fontSize:13,fontFamily:sans,whiteSpace:"pre-wrap",lineHeight:1.7,margin:0}}>{q.questionText}</pre>
+            <CodeBlock code={q.code}/>
+            <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:16}}>
+              {q.options.map((opt,i)=>{
+                let bg=C.bgHover, border=`1px solid ${C.border}`, color=C.text;
+                if(testShowFeedback){
+                  if(i===Number(q.correctIndex)){bg=`${C.success}22`;border=`1px solid ${C.success}`;color=C.success;}
+                  else if(i===Number(testSelected)&&!correct){bg=`${C.error}22`;border=`1px solid ${C.error}`;color=C.error;}
+                } else if(i===testSelected){bg=`${C.accent}22`;border=`1px solid ${C.accent}`;color=C.accentL;}
+                return <button key={i} onClick={()=>handleTestAnswer(i)} disabled={testShowFeedback}
+                  style={{background:bg,border,borderRadius:10,padding:"12px 16px",textAlign:"left",color,fontSize:13,fontFamily:sans,cursor:testShowFeedback?"default":"pointer",transition:"all 0.2s"}}>
+                  <span style={{fontFamily:font,marginRight:8,opacity:0.5}}>{String.fromCharCode(65+i)}.</span>{opt}
+                </button>;
+              })}
+            </div>
+            {testShowFeedback&&(
+              <div style={{marginTop:16,background:correct?`${C.success}11`:`${C.error}11`,border:`1px solid ${correct?C.success:C.error}33`,borderRadius:10,padding:14}}>
+                <div style={{fontSize:12,fontWeight:700,color:correct?C.success:C.error,marginBottom:6}}>{correct?"✅ Correct!":"❌ Incorrect"}</div>
+                <p style={{fontSize:12,color:C.textD,margin:0,lineHeight:1.7}}>{q.explanation}</p>
+              </div>
+            )}
+          </div>
+          {testShowFeedback&&(
+            <button onClick={nextTestQuestion}
+              style={{width:"100%",background:`linear-gradient(135deg,${C.accent},${C.accentD})`,color:"#fff",border:"none",borderRadius:10,padding:"14px",fontSize:14,fontFamily:font,fontWeight:700,cursor:"pointer"}}>
+              {testIdx>=currentTestQuestions.length-1?(isPost?"View Results →":"Start Training →"):"Next Question →"}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ─── TRAINING ────────────────────────────────────────────────────────────────
+  if(screen==="training") {
+    if(!currentQuestion) return <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",color:C.textD,fontFamily:font}}>Loading...</div>;
+    const q = currentQuestion;
+    const correct = trainSelected!==null&&Number(trainSelected)===Number(q.correctIndex);
+    const skill = SKILLS[currentSkillIndex];
+    const globalProgress = Math.round((answeredTrainingQuestions/totalTrainingQuestions)*100);
+    const skillProgress = Math.round((currentQuestionIndex/currentSkillQuestions.length)*100);
+    const isLastQ = currentQuestionIndex>=currentSkillQuestions.length-1 && currentSkillIndex>=SKILLS.length-1;
+    return (
+      <div style={{minHeight:"100vh",background:C.bg,fontFamily:sans}}>
+        <div style={{display:"flex",minHeight:"100vh"}}>
+          {/* Sidebar */}
+          <div className="sidebar-left" style={{width:210,background:C.bgSidebar,borderRight:`1px solid ${C.border}`,padding:14,overflowY:"auto",flexShrink:0,display:"flex",flexDirection:"column",gap:16}}>
+            <div>
+              <div style={{color:C.textM,fontSize:10,fontFamily:font,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Learning Path</div>
+              {SKILLS.map((s,idx)=>{
+                const done=idx<currentSkillIndex, active=idx===currentSkillIndex;
+                const skillAnswers = trainAnswers.filter(a=>a.skillId===s.id);
+                const pct = skillAnswers.length>0?Math.round(skillAnswers.filter(a=>a.correct).length/skillAnswers.length*100):0;
+                return (
+                  <div key={s.id} style={{marginBottom:8}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
+                      <span style={{fontSize:10,fontFamily:font,color:done?C.success:active?C.accentL:C.textM,fontWeight:active?"bold":"normal"}}>{done?"✅":active?"▶":"○"} {s.icon} {s.id}</span>
+                      {done&&<span style={{fontSize:9,fontFamily:font,color:C.success}}>{pct}%</span>}
+                    </div>
+                    {active&&<ProgressBar value={skillProgress} color={C.accent} height={3}/>}
+                    {done&&<ProgressBar value={100} color={C.success} height={3}/>}
+                  </div>
+                );
+              })}
+            </div>
+            <div>
+              <div style={{color:C.textM,fontSize:10,fontFamily:font,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>📋 Fixed Sequence</div>
+              <div style={{fontSize:10,fontFamily:font,color:C.textD,lineHeight:1.6}}>
+                All participants receive the same questions in the same order.
+              </div>
+            </div>
+            <div>
+              <div style={{color:C.textM,fontSize:10,fontFamily:font,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>🧾 Log</div>
+              <div style={{maxHeight:180,overflowY:"auto"}}>
+                {sessionLog.map((e,i)=><div key={i} style={{fontSize:10,fontFamily:font,color:C.textD,padding:"3px 0",borderBottom:`1px solid ${C.border}22`,lineHeight:1.5}}>{e}</div>)}
+                {sessionLog.length===0&&<div style={{fontSize:10,color:C.textM,fontFamily:font}}>No activity yet...</div>}
+              </div>
+            </div>
+          </div>
+
+          {/* Main */}
+          <div style={{flex:1,padding:24,overflowY:"auto"}}>
+            <div style={{maxWidth:660,margin:"0 auto"}}>
+              {/* Header */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                  <span style={{background:`${C.accent}22`,color:C.accentL,padding:"3px 10px",borderRadius:6,fontSize:10,fontFamily:font}}>📋 Traditional</span>
+                  <span style={{background:C.bgCard,color:C.textD,padding:"3px 10px",borderRadius:6,fontSize:10,fontFamily:font}}>{skill?.icon} {skill?.label}</span>
+                  <span style={{background:q.difficulty==="easy"?`${C.success}22`:q.difficulty==="medium"?`${C.warning}22`:`${C.error}22`,color:q.difficulty==="easy"?C.success:q.difficulty==="medium"?C.warning:C.error,padding:"3px 8px",borderRadius:6,fontSize:9,fontFamily:font}}>{q.difficulty==="easy"?"🟢 Easy":q.difficulty==="medium"?"🟡 Medium":"🔴 Hard"}</span>
+                </div>
+                <span style={{fontSize:11,color:C.textD,fontFamily:font}}>{trainAnswers.filter(a=>a.correct).length}/{trainAnswers.length} correct</span>
+              </div>
+
+              {/* Progress */}
+              <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontSize:11,fontFamily:font,color:C.text}}>Overall Progress</span>
+                  <span style={{fontSize:11,fontFamily:font,color:C.accentL,fontWeight:700}}>Question {answeredTrainingQuestions+1} / {totalTrainingQuestions}</span>
+                </div>
+                <ProgressBar value={globalProgress} color={C.accent} height={8}/>
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
+                  <span style={{fontSize:10,color:C.textM,fontFamily:font}}>{skill?.icon} Skill {currentSkillIndex+1}/{SKILLS.length}: Q{currentQuestionIndex+1}/{currentSkillQuestions.length}</span>
+                  <span style={{fontSize:10,color:C.textM,fontFamily:font}}>{globalProgress}%</span>
+                </div>
+              </div>
+
+              {/* Question */}
+              <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:24,marginBottom:16,animation:"fadeIn 0.3s"}}>
+                <pre style={{color:C.text,fontSize:13,fontFamily:sans,whiteSpace:"pre-wrap",lineHeight:1.7,margin:0}}>{q.questionText}</pre>
+                <CodeBlock code={q.code}/>
+                <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:16}}>
+                  {q.options.map((opt,i)=>{
+                    let bg=C.bgHover, border=`1px solid ${C.border}`, color=C.text;
+                    if(trainShowFeedback){
+                      if(i===Number(q.correctIndex)){bg=`${C.success}22`;border=`1px solid ${C.success}`;color=C.success;}
+                      else if(i===Number(trainSelected)&&!correct){bg=`${C.error}22`;border=`1px solid ${C.error}`;color=C.error;}
+                    } else if(i===trainSelected){bg=`${C.accent}22`;border=`1px solid ${C.accent}`;color=C.accentL;}
+                    return <button key={i} onClick={()=>handleTrainAnswer(i)} disabled={trainShowFeedback}
+                      style={{background:bg,border,borderRadius:10,padding:"12px 16px",textAlign:"left",color,fontSize:13,fontFamily:sans,cursor:trainShowFeedback?"default":"pointer",transition:"all 0.2s"}}>
+                      <span style={{fontFamily:font,marginRight:8,opacity:0.5}}>{String.fromCharCode(65+i)}.</span>{opt}
+                    </button>;
+                  })}
+                </div>
+
+                {/* Feedback */}
+                {trainShowFeedback&&(
+                  <div style={{marginTop:16}}>
+                    <div style={{background:correct?`${C.success}11`:`${C.error}11`,border:`1px solid ${correct?C.success:C.error}33`,borderRadius:10,padding:14,marginBottom:8}}>
+                      <div style={{fontSize:12,fontWeight:700,color:correct?C.success:C.error,marginBottom:6}}>{correct?"✅ Correct!":"❌ Incorrect"}</div>
+                      <p style={{fontSize:12,color:C.textD,margin:0,lineHeight:1.7}}>{q.explanation}</p>
+                    </div>
+                    {!correct&&(
+                      <div style={{background:`${C.accent}11`,border:`1px solid ${C.accent}33`,borderRadius:10,padding:14}}>
+                        <div style={{fontSize:10,color:C.accentL,fontFamily:font,fontWeight:700,marginBottom:6}}>📝 Standard Feedback</div>
+                        {trainAiLoading?<p style={{fontSize:12,color:C.textM,margin:0}}>Getting feedback...</p>:
+                          <p style={{fontSize:12,color:C.textD,margin:0,lineHeight:1.7}}>{trainAiFeedback||`Review the explanation above and the correct answer: "${q.options[q.correctIndex]}".`}</p>}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {trainShowFeedback&&(
+                <button onClick={nextTrainQuestion}
+                  style={{width:"100%",background:`linear-gradient(135deg,${C.accent},${C.accentD})`,color:"#fff",border:"none",borderRadius:10,padding:"14px",fontSize:14,fontFamily:font,fontWeight:700,cursor:"pointer"}}>
+                  {isLastQ?"Start Post-Test →":"Next Question →"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── RESULTS ─────────────────────────────────────────────────────────────────
+  if(screen==="results") {
+    const preAnswers = preTestAnswers;
+    const postAnswers = postTestAnswers;
+    const preScore = preAnswers.length>0?preAnswers.filter(a=>a.correct).length/preAnswers.length:0;
+    const postScore = postAnswers.length>0?postAnswers.filter(a=>a.correct).length/postAnswers.length:0;
+    const improvement = Math.round((postScore-preScore)*100);
+    const hakeGain = preScore<1?Math.round(((postScore-preScore)/(1-preScore))*100):100;
+    const trainCorrect = trainAnswers.filter(a=>a.correct).length;
+    const cohenD = (postScore-preScore)/(Math.sqrt(((preScore*(1-preScore))+(postScore*(1-postScore)))/2)||0.01);
+
+    return (
+      <div style={{minHeight:"100vh",background:C.bg,fontFamily:sans,padding:24}}>
+        <div style={{maxWidth:700,margin:"0 auto"}}>
+          <div style={{textAlign:"center",marginBottom:28}}>
+            <div style={{fontSize:56,marginBottom:12}}>🎓</div>
+            <h2 style={{color:C.text,fontFamily:font,fontSize:24,margin:"0 0 8px"}}>Session Complete!</h2>
+            <p style={{color:C.textD,fontSize:13}}>Traditional Group — {participantName}</p>
+          </div>
+
+          {/* Improvement banner */}
+          <div style={{background:improvement>0?`${C.success}11`:`${C.warning}11`,border:`1px solid ${improvement>0?C.success:C.warning}33`,borderRadius:12,padding:20,textAlign:"center",marginBottom:20}}>
+            <div style={{color:improvement>0?C.success:C.warning,fontSize:36,fontWeight:800,fontFamily:font}}>{improvement>0?`+${improvement}%`:`${improvement}%`}</div>
+            <div style={{color:C.textD,fontSize:13}}>{improvement>10?"Outstanding improvement!":improvement>0?"You've made progress!":"Keep practicing!"}</div>
+          </div>
+
+          {/* Stats */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
+            {[
+              {l:"Pre-Test",v:`${Math.round(preScore*100)}%`,c:C.textD},
+              {l:"Post-Test",v:`${Math.round(postScore*100)}%`,c:C.success},
+              {l:"Hake's Gain",v:`${hakeGain}%`,c:C.accent},
+              {l:"Cohen's d",v:Math.abs(cohenD).toFixed(2),c:C.warning},
+            ].map((m,i)=>(
+              <div key={i} style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:10,padding:14,textAlign:"center"}}>
+                <div style={{color:m.c,fontSize:20,fontWeight:700,fontFamily:font}}>{m.v}</div>
+                <div style={{color:C.textM,fontSize:10,fontFamily:font,marginTop:4}}>{m.l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Training summary */}
+          <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:24,marginBottom:20}}>
+            <h3 style={{color:C.text,fontFamily:font,fontSize:14,margin:"0 0 14px"}}>Training Performance</h3>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
+              <div style={{textAlign:"center",background:C.bg,borderRadius:10,padding:12}}>
+                <div style={{color:C.accent,fontSize:20,fontWeight:700,fontFamily:font}}>{trainAnswers.length}</div>
+                <div style={{color:C.textM,fontSize:10,fontFamily:font}}>Questions Answered</div>
+              </div>
+              <div style={{textAlign:"center",background:C.bg,borderRadius:10,padding:12}}>
+                <div style={{color:C.success,fontSize:20,fontWeight:700,fontFamily:font}}>{trainCorrect}</div>
+                <div style={{color:C.textM,fontSize:10,fontFamily:font}}>Correct</div>
+              </div>
+              <div style={{textAlign:"center",background:C.bg,borderRadius:10,padding:12}}>
+                <div style={{color:C.accentL,fontSize:20,fontWeight:700,fontFamily:font}}>{trainAnswers.length>0?Math.round(trainCorrect/trainAnswers.length*100):0}%</div>
+                <div style={{color:C.textM,fontSize:10,fontFamily:font}}>Accuracy</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Skill breakdown */}
+          <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:24,marginBottom:20}}>
+            <h3 style={{color:C.text,fontFamily:font,fontSize:14,margin:"0 0 14px"}}>Skill Performance: Pre → Post</h3>
+            {SKILLS.map(s=>{
+              const pre = preAnswers.filter(a=>a.skill===s.id);
+              const post = postAnswers.filter(a=>a.skill===s.id);
+              const preP = pre.length>0?Math.round(pre.filter(a=>a.correct).length/pre.length*100):0;
+              const postP = post.length>0?Math.round(post.filter(a=>a.correct).length/post.length*100):0;
+              const diff = postP - preP;
+              return (
+                <div key={s.id} style={{marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                    <span style={{fontSize:12,fontFamily:font,color:C.text}}>{s.icon} {s.label}</span>
+                    <span style={{fontSize:12,fontFamily:font,color:diff>0?C.success:diff<0?C.error:C.textM}}>{preP}% → {postP}% ({diff>0?"+":""}{diff}%)</span>
+                  </div>
+                  <div style={{background:C.border,borderRadius:4,height:8,overflow:"hidden",position:"relative"}}>
+                    <div style={{width:`${preP}%`,height:"100%",background:`${C.textM}66`,borderRadius:4,position:"absolute",top:0,left:0}}/>
+                    <div style={{width:`${postP}%`,height:"100%",background:postP>=80?C.success:C.accent,borderRadius:4,position:"relative",zIndex:1,transition:"width 1s ease"}}/>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Response time */}
+          {responseTimes.length>0&&(
+            <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:24,marginBottom:20}}>
+              <h3 style={{color:C.text,fontFamily:font,fontSize:14,margin:"0 0 14px"}}>⏱️ Response Time Analysis</h3>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
+                <div style={{textAlign:"center",background:C.bg,borderRadius:10,padding:12}}>
+                  <div style={{color:C.accentL,fontSize:20,fontWeight:700,fontFamily:font}}>{(responseTimes.reduce((a,r)=>a+r.timeMs,0)/responseTimes.length/1000).toFixed(1)}s</div>
+                  <div style={{color:C.textM,fontSize:9,fontFamily:font}}>Avg Response</div>
+                </div>
+                <div style={{textAlign:"center",background:C.bg,borderRadius:10,padding:12}}>
+                  <div style={{color:C.success,fontSize:20,fontWeight:700,fontFamily:font}}>{responseTimes.filter(r=>r.correct).length>0?(responseTimes.filter(r=>r.correct).reduce((a,r)=>a+r.timeMs,0)/responseTimes.filter(r=>r.correct).length/1000).toFixed(1):"—"}s</div>
+                  <div style={{color:C.textM,fontSize:9,fontFamily:font}}>When Correct</div>
+                </div>
+                <div style={{textAlign:"center",background:C.bg,borderRadius:10,padding:12}}>
+                  <div style={{color:C.error,fontSize:20,fontWeight:700,fontFamily:font}}>{responseTimes.filter(r=>!r.correct).length>0?(responseTimes.filter(r=>!r.correct).reduce((a,r)=>a+r.timeMs,0)/responseTimes.filter(r=>!r.correct).length/1000).toFixed(1):"—"}s</div>
+                  <div style={{color:C.textM,fontSize:9,fontFamily:font}}>When Wrong</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Timing */}
+          {sessionStartTime&&sessionEndTime&&(
+            <div style={{background:`${C.accent}08`,border:`1px solid ${C.accent}33`,borderRadius:12,padding:16,marginBottom:20,textAlign:"center"}}>
+              <div style={{color:C.accentL,fontSize:10,fontFamily:font,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>⏱️ Session Timing</div>
+              <div style={{display:"flex",gap:16,justifyContent:"center",flexWrap:"wrap"}}>
+                <div>
+                  <div style={{color:C.text,fontSize:18,fontWeight:700,fontFamily:font}}>{Math.floor((sessionEndTime-sessionStartTime)/60000)}m {Math.round(((sessionEndTime-sessionStartTime)%60000)/1000)}s</div>
+                  <div style={{color:C.textM,fontSize:9,fontFamily:font}}>Total Duration</div>
+                </div>
+                {phaseTimestamps.pretest_start&&phaseTimestamps.pretest_end&&(
+                  <div>
+                    <div style={{color:C.textD,fontSize:14,fontWeight:700,fontFamily:font}}>{Math.floor((phaseTimestamps.pretest_end-phaseTimestamps.pretest_start)/60000)}m {Math.round(((phaseTimestamps.pretest_end-phaseTimestamps.pretest_start)%60000)/1000)}s</div>
+                    <div style={{color:C.textM,fontSize:9,fontFamily:font}}>Pre-Test</div>
+                  </div>
+                )}
+                {phaseTimestamps.training_start&&phaseTimestamps.training_end&&(
+                  <div>
+                    <div style={{color:C.textD,fontSize:14,fontWeight:700,fontFamily:font}}>{Math.floor((phaseTimestamps.training_end-phaseTimestamps.training_start)/60000)}m {Math.round(((phaseTimestamps.training_end-phaseTimestamps.training_start)%60000)/1000)}s</div>
+                    <div style={{color:C.textM,fontSize:9,fontFamily:font}}>Training</div>
+                  </div>
+                )}
+                {phaseTimestamps.posttest_start&&phaseTimestamps.posttest_end&&(
+                  <div>
+                    <div style={{color:C.textD,fontSize:14,fontWeight:700,fontFamily:font}}>{Math.floor((phaseTimestamps.posttest_end-phaseTimestamps.posttest_start)/60000)}m {Math.round(((phaseTimestamps.posttest_end-phaseTimestamps.posttest_start)%60000)/1000)}s</div>
+                    <div style={{color:C.textM,fontSize:9,fontFamily:font}}>Post-Test</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div style={{display:"flex",gap:12,justifyContent:"center",marginTop:8}}>
+            <button onClick={()=>{
+              clearSession(participantEmail);
+              setScreen("register");
+              setRegEmail("");setRegName("");setRegId("");setRegGender("");setRegMajor("");setRegYear("");setRegPrior("");setRegHours("");
+              setParticipantName("");setParticipantEmail("");setParticipantId("");
+              setConsentGiven(false);setConsentTimestamp(null);
+              setTestIdx(0);setTestAnswers([]);setTestSelected(null);setTestShowFeedback(false);
+              setTrainAnswers([]);setCurrentSkillIndex(0);setCurrentQuestionIndex(0);
+              setPreTestAnswers([]);setPostTestAnswers([]);setPreBkt(null);setPostBkt(null);
+              setSessionStartTime(null);setSessionEndTime(null);setPhaseTimestamps({});setResponseTimes([]);
+              setSessionLog([]);setResumeData(null);setRegisterError("");
+            }}
+              style={{background:C.bgCard,color:C.textD,border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 32px",fontSize:13,fontFamily:font,cursor:"pointer"}}>
+              🔄 مشارك جديد
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+</body>
+</html>
